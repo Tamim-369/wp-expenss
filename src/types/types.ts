@@ -12,6 +12,14 @@ export interface GroqExpenseResponse {
     error?: string;
 }
 
+export interface MonthlyTotal {
+    month: string;
+    year: number;
+    totalAmount: number;
+    currency: string;
+    expenseCount: number;
+}
+
 export interface EnvConfig {
     GROQ_API_KEY: string;
     GOOGLE_SHEETS_ID: string;

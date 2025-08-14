@@ -4,7 +4,7 @@ import { GoogleSpreadsheet } from "google-spreadsheet";
 import { JWT } from "google-auth-library";
 import Groq from "groq-sdk";
 import { config } from "dotenv";
-import type { ExpenseData, GroqExpenseResponse } from "./types.ts";
+import type { ExpenseData, GroqExpenseResponse, MonthlyTotal } from "./types/types.ts";
 
 config();
 
@@ -146,9 +146,19 @@ class WhatsAppExpenseTracker {
 
       if (expenseData) {
         await this.addToGoogleSheet(expenseData);
-        await originalMessage.reply(
-          `✅ Added to expenses:\n📝 Item: ${expenseData.item}\n💰 Price: $${expenseData.price}\n📅 Date: ${expenseData.date}`
-        );
+        // Calculate monthly total after adding the expense
+        const monthlyTotal = await this.calculateMonthlyTotal(expenseData.date);
+
+        const replyMessage = `✅ Added to expenses:
+📝 Item: ${expenseData.item}
+💰 Price: ${expenseData.currency} ${expenseData.price}
+📅 Date: ${expenseData.date}
+
+📊 ${monthlyTotal.month} ${monthlyTotal.year} Summary:
+💵 Total: ${monthlyTotal.currency} ${monthlyTotal.totalAmount}
+📈 Expenses: ${monthlyTotal.expenseCount} items`;
+
+        await originalMessage.reply(replyMessage);
       } else {
         await originalMessage.reply(
           '❌ Could not extract expense information. Please use format like "Potato 10 usd" or "Coffee $5.50"'
@@ -232,6 +242,78 @@ Examples:
     } catch (error) {
       console.error("❌ Error extracting expense data:", error);
       return null;
+    }
+  }
+
+  private async calculateMonthlyTotal(currentDate: string): Promise<MonthlyTotal> {
+    try {
+      // Create JWT client for authentication
+      const serviceAccountAuth = new JWT({
+        email: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
+        key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, "\n"),
+        scopes: ["https://www.googleapis.com/auth/spreadsheets"],
+      });
+
+      // Initialize GoogleSpreadsheet with JWT client
+      const doc = new GoogleSpreadsheet(
+        process.env.GOOGLE_SHEETS_ID,
+        serviceAccountAuth
+      );
+
+      await doc.loadInfo();
+      const sheet = doc.sheetsByIndex[0];
+
+      if (!sheet) {
+        return {
+          month: new Date(currentDate).toLocaleString('default', { month: 'long' }),
+          year: new Date(currentDate).getFullYear(),
+          totalAmount: 0,
+          currency: "USD",
+          expenseCount: 0
+        };
+      }
+
+      await sheet.loadHeaderRow();
+      const rows = await sheet.getRows();
+
+      const currentMonth = new Date(currentDate).getMonth();
+      const currentYear = new Date(currentDate).getFullYear();
+
+      let totalAmount = 0;
+      let expenseCount = 0;
+      let currency = "USD";
+
+      // Filter and sum expenses for current month
+      for (const row of rows) {
+        const rowDate = new Date(row.get('Date'));
+        if (rowDate.getMonth() === currentMonth && rowDate.getFullYear() === currentYear) {
+          const price = parseFloat(row.get('Price')) || 0;
+          totalAmount += price;
+          expenseCount++;
+
+          // Use the currency from the first expense found
+          if (expenseCount === 1) {
+            currency = row.get('Currency') || "USD";
+          }
+        }
+      }
+
+      return {
+        month: new Date(currentDate).toLocaleString('default', { month: 'long' }),
+        year: currentYear,
+        totalAmount: Math.round(totalAmount * 100) / 100, // Round to 2 decimal places
+        currency,
+        expenseCount
+      };
+    } catch (error) {
+      console.error("❌ Error calculating monthly total:", error);
+      return {
+        month: new Date(currentDate).toLocaleString('default', { month: 'long' }),
+        year: new Date(currentDate).getFullYear(),
+        totalAmount: 0,
+        currency: "USD",
+        expenseCount: 0
+      };
     }
   }
 
