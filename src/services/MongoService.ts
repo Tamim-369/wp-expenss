@@ -1,4 +1,3 @@
-// services/MongoService.ts
 import { Budget, Expense, Conversation } from "../models/ExpenseModel";
 import type { MonthlyTotal } from "../types/types";
 
