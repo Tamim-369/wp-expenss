@@ -1,4 +1,3 @@
-// services/ExpenseService.ts
 import { Message, MessageMedia } from "whatsapp-web.js";
 import Groq from "groq-sdk";
 import type {
