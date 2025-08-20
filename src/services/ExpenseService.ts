@@ -1,4 +1,4 @@
-import { Message, MessageMedia } from "whatsapp-web.js";
+import { Client, Message, MessageMedia } from "whatsapp-web.js";
 import Groq from "groq-sdk";
 import type {
   ExpenseData,
@@ -10,11 +10,13 @@ import { MongoService } from "./MongoService";
 
 export class ExpenseService {
   private groq: Groq;
+  private client: Client;
 
-  constructor() {
+  constructor(client: Client) {
     this.groq = new Groq({
       apiKey: process.env.GROQ_API_KEY,
     });
+    this.client = client;
   }
 
   public async processExpenseMessage(
@@ -26,7 +28,13 @@ export class ExpenseService {
       const expenseData = await this.extractExpenseData(messageText);
 
       if (expenseData) {
-        await this.addToMongo(expenseData, originalMessage.from);
+        // round to 2 decimals
+        expenseData.price = Math.round(expenseData.price * 100) / 100;
+        const created = await this.addToMongo(
+          expenseData,
+          originalMessage.from,
+          mongoService
+        );
         const monthlyTotal = await mongoService.calculateMonthlyTotal(
           originalMessage.from,
           expenseData.date
@@ -36,26 +44,32 @@ export class ExpenseService {
         );
         const remaining = budget - monthlyTotal.totalAmount;
 
-        const replyMessage = `✅ Added to expenses:
-📝 Item: ${expenseData.item}
-💰 Price: ${expenseData.currency} ${expenseData.price}
-📅 Date: ${expenseData.date}
+        const replyMessage = this.buildAddedReply(
+          created.number,
+          expenseData.item,
+          expenseData.currency,
+          expenseData.price,
+          expenseData.date,
+          monthlyTotal.month,
+          monthlyTotal.year,
+          monthlyTotal.currency,
+          monthlyTotal.totalAmount,
+          monthlyTotal.expenseCount,
+          budget,
+          remaining
+        );
 
-📊 ${monthlyTotal.month} ${monthlyTotal.year} Summary:
-💵 Total: ${monthlyTotal.currency} ${monthlyTotal.totalAmount}
-📈 Expenses: ${monthlyTotal.expenseCount} items
-🛡️ Budget: USD ${budget}
-📉 Remaining: USD ${remaining}`;
-
-        await originalMessage.reply(replyMessage);
+        await this.client.sendMessage(originalMessage.from, replyMessage);
       } else {
-        await originalMessage.reply(
+        await this.client.sendMessage(
+          originalMessage.from,
           '❌ Could not extract expense information. Please use format like "Potato 10 usd" or "Coffee $5.50"'
         );
       }
     } catch (error) {
       console.error("❌ Error processing expense message:", error);
-      await originalMessage.reply(
+      await this.client.sendMessage(
+        originalMessage.from,
         "Sorry, there was an error processing your expense. Please try again."
       );
       throw error;
@@ -105,7 +119,12 @@ export class ExpenseService {
       }
 
       if (finalExpense) {
-        await this.addToMongo(finalExpense, originalMessage.from);
+        finalExpense.price = Math.round(finalExpense.price * 100) / 100;
+        const created = await this.addToMongo(
+          finalExpense,
+          originalMessage.from,
+          mongoService
+        );
         const monthlyTotal = await mongoService.calculateMonthlyTotal(
           originalMessage.from,
           finalExpense.date
@@ -115,26 +134,32 @@ export class ExpenseService {
         );
         const remaining = budget - monthlyTotal.totalAmount;
 
-        const replyMessage = `✅ Added to expenses from image:
-📝 Item: ${finalExpense.item}
-💰 Price: ${finalExpense.currency} ${finalExpense.price}
-📅 Date: ${finalExpense.date}
+        const replyMessage = this.buildAddedReply(
+          created.number,
+          finalExpense.item,
+          finalExpense.currency,
+          finalExpense.price,
+          finalExpense.date,
+          monthlyTotal.month,
+          monthlyTotal.year,
+          monthlyTotal.currency,
+          monthlyTotal.totalAmount,
+          monthlyTotal.expenseCount,
+          budget,
+          remaining
+        );
 
-📊 ${monthlyTotal.month} ${monthlyTotal.year} Summary:
-💵 Total: ${monthlyTotal.currency} ${monthlyTotal.totalAmount}
-📈 Expenses: ${monthlyTotal.expenseCount} items
-🛡️ Budget: USD ${budget}
-📉 Remaining: USD ${remaining}`;
-
-        await originalMessage.reply(replyMessage);
+        await this.client.sendMessage(originalMessage.from, replyMessage);
       } else {
-        await originalMessage.reply(
+        await this.client.sendMessage(
+          originalMessage.from,
           '❌ Could not extract expense information from the image. Please add a caption with details like "Groceries 25 usd" or try a clearer image.'
         );
       }
     } catch (error) {
       console.error("❌ Error processing image message:", error);
-      await originalMessage.reply(
+      await this.client.sendMessage(
+        originalMessage.from,
         "Sorry, there was an error processing your image. Please try again."
       );
       throw error;
@@ -165,7 +190,8 @@ export class ExpenseService {
       );
 
       if (!correctedExpenseData) {
-        await originalMessage.reply(
+        await this.client.sendMessage(
+          originalMessage.from,
           "❌ Could not parse the correction. Please use format like 'no it will be Coffee 15 usd'"
         );
         return;
@@ -177,11 +203,15 @@ export class ExpenseService {
       });
 
       if (!lastExpense) {
-        await originalMessage.reply("❌ No recent expense found to correct.");
+        await this.client.sendMessage(
+          originalMessage.from,
+          "❌ No recent expense found to correct."
+        );
         return;
       }
 
       // Update the last expense with corrected data
+      correctedExpenseData.price = Math.round(correctedExpenseData.price * 100) / 100;
       await Expense.findByIdAndUpdate(lastExpense._id, {
         item: correctedExpenseData.item,
         price: correctedExpenseData.price,
@@ -197,25 +227,98 @@ export class ExpenseService {
       const budget = await mongoService.getMonthlyBudget(userId);
       const remaining = budget - monthlyTotal.totalAmount;
 
-      const replyMessage = `✅ Expense corrected:
-📝 Item: ${correctedExpenseData.item}
-💰 Price: ${correctedExpenseData.currency} ${correctedExpenseData.price}
-📅 Date: ${correctedExpenseData.date}
+      const replyMessage = this.buildUpdatedReply(
+        typeof lastExpense.number === "number" ? lastExpense.number : 0,
+        correctedExpenseData.item,
+        correctedExpenseData.currency,
+        correctedExpenseData.price,
+        correctedExpenseData.date,
+        monthlyTotal.month,
+        monthlyTotal.year,
+        monthlyTotal.currency,
+        monthlyTotal.totalAmount,
+        monthlyTotal.expenseCount,
+        budget,
+        remaining
+      );
 
-📊 ${monthlyTotal.month} ${monthlyTotal.year} Summary:
-💵 Total: ${monthlyTotal.currency} ${monthlyTotal.totalAmount}
-📈 Expenses: ${monthlyTotal.expenseCount} items
-🛡️ Budget: USD ${budget}
-📉 Remaining: USD ${remaining}`;
-
-      await originalMessage.reply(replyMessage);
+      await this.client.sendMessage(originalMessage.from, replyMessage);
     } catch (error) {
       console.error("❌ Error handling correction:", error);
-      await originalMessage.reply(
+      await this.client.sendMessage(
+        originalMessage.from,
         "Sorry, there was an error processing your correction. Please try again."
       );
       throw error;
     }
+  }
+
+  private padNumber(num: number): string {
+    if (!num || num < 0) return "";
+    if (num < 1000) return String(num).padStart(3, "0");
+    return String(num);
+  }
+
+  private money(amount: number): string {
+    return (Math.round(amount * 100) / 100).toFixed(2);
+  }
+
+  private buildAddedReply(
+    number: number,
+    item: string,
+    currency: string,
+    price: number,
+    date: string,
+    month: string,
+    year: number,
+    totalCurrency: string,
+    totalAmount: number,
+    expenseCount: number,
+    budget: number,
+    remaining: number
+  ): string {
+    const numLine = number ? `*#${this.padNumber(number)}*\n` : "";
+    return (
+      `*✅ Expense Added*\n` +
+      numLine +
+      `*Item:* ${item}\n` +
+      `*Price:* ${currency} ${this.money(price)}\n` +
+      `*Date:* ${date}\n\n` +
+      `*${month} ${year} Summary*\n` +
+      `*Total:* ${totalCurrency} ${this.money(totalAmount)}\n` +
+      `*Expenses:* ${expenseCount} items\n` +
+      `*Budget:* USD ${this.money(budget)}\n` +
+      `*Remaining:* USD ${this.money(remaining)}`
+    );
+  }
+
+  private buildUpdatedReply(
+    number: number,
+    item: string,
+    currency: string,
+    price: number,
+    date: string,
+    month: string,
+    year: number,
+    totalCurrency: string,
+    totalAmount: number,
+    expenseCount: number,
+    budget: number,
+    remaining: number
+  ): string {
+    const numLine = number ? `*#${this.padNumber(number)}*\n` : "";
+    return (
+      `*✅ Expense Updated*\n` +
+      numLine +
+      `*Item:* ${item}\n` +
+      `*Price:* ${currency} ${this.money(price)}\n` +
+      `*Date:* ${date}\n\n` +
+      `*${month} ${year} Summary*\n` +
+      `*Total:* ${totalCurrency} ${this.money(totalAmount)}\n` +
+      `*Expenses:* ${expenseCount} items\n` +
+      `*Budget:* USD ${this.money(budget)}\n` +
+      `*Remaining:* USD ${this.money(remaining)}`
+    );
   }
 
   private async extractTextFromImage(imageUrl: string): Promise<string> {
@@ -442,14 +545,18 @@ Examples:
 
   public async addToMongo(
     expenseData: ExpenseData,
-    userId: string
-  ): Promise<void> {
+    userId: string,
+    mongoService: MongoService
+  ): Promise<{ id: string; number: number }> {
     try {
-      await Expense.create({
+      const seq = await mongoService.getNextExpenseNumber();
+      const saved = await Expense.create({
         ...expenseData,
         userId,
+        number: seq,
       });
-      console.log("✅ Added to MongoDB:", expenseData);
+      console.log("✅ Added to MongoDB:", { ...expenseData, number: seq });
+      return { id: String(saved._id), number: seq };
     } catch (error) {
       console.error("❌ Error adding to MongoDB:", error);
       throw error;

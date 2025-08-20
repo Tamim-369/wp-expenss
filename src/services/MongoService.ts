@@ -1,4 +1,4 @@
-import { Budget, Expense, Conversation } from "../models/ExpenseModel";
+import { Budget, Expense, Conversation, Counter } from "../models/ExpenseModel";
 import type { MonthlyTotal } from "../types/types";
 
 export class MongoService {
@@ -93,5 +93,14 @@ export class MongoService {
       .limit(count)
       .select("message");
     return messages.map((m) => m.message).reverse(); // oldest to newest
+  }
+
+  public async getNextExpenseNumber(): Promise<number> {
+    const counter = await Counter.findOneAndUpdate(
+      { key: "expense_number" },
+      { $inc: { seq: 1 } },
+      { upsert: true, new: true }
+    );
+    return counter.seq;
   }
 }

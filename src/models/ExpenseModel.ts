@@ -13,6 +13,7 @@ interface IExpense extends Document {
   price: number;
   currency: string;
   date: string;
+  number: number;
 }
 
 interface IConversation extends Document {
@@ -34,6 +35,7 @@ const ExpenseSchema = new Schema<IExpense>({
   price: { type: Number, required: true },
   currency: { type: String, required: true, default: "USD" },
   date: { type: String, required: true },
+  number: { type: Number, required: true, index: true },
 });
 
 const ConversationSchema = new Schema<IConversation>({
@@ -48,3 +50,16 @@ export const Conversation = model<IConversation>(
   "Conversation",
   ConversationSchema
 );
+
+// Counter for running expense numbers
+interface ICounter extends Document {
+  key: string;
+  seq: number;
+}
+
+const CounterSchema = new Schema<ICounter>({
+  key: { type: String, required: true, unique: true },
+  seq: { type: Number, required: true, default: 0 },
+});
+
+export const Counter = model<ICounter>("Counter", CounterSchema);

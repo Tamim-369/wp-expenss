@@ -1,8 +1,13 @@
-import { Message, MessageMedia } from "whatsapp-web.js";
+import { Client, Message, MessageMedia } from "whatsapp-web.js";
 import XLSX from "xlsx";
 import { Expense } from "../models/ExpenseModel";
 
 export class ExcelService {
+  private client?: Client;
+
+  constructor(client?: Client) {
+    this.client = client;
+  }
   public async sendExcelFile(
     userId: string,
     originalMessage: Message
@@ -33,17 +38,25 @@ export class ExcelService {
       }
 
       if (!expenses || expenses.length === 0) {
-        await originalMessage.reply(
-          "❌ No expenses found for the requested period."
-        );
+        if (this.client) {
+          await this.client.sendMessage(
+            userId,
+            "❌ No expenses found for the requested period."
+          );
+        } else {
+          await originalMessage.reply(
+            "❌ No expenses found for the requested period."
+          );
+        }
         return;
       }
 
       const worksheet = XLSX.utils.json_to_sheet(
         expenses.map((exp) => ({
+          Number: typeof exp.number === "number" ? `#${String(exp.number).padStart(3, "0")}` : "",
           Date: exp.date,
           Item: exp.item,
-          Price: exp.price,
+          Price: (Math.round(exp.price * 100) / 100).toFixed(2),
           Currency: exp.currency,
         }))
       );
@@ -57,13 +70,25 @@ export class ExcelService {
         buffer.toString("base64"),
         fileName
       );
-      await originalMessage.reply(media);
-      await originalMessage.reply(`✅ Sent expense data as ${fileName}`);
+      if (this.client) {
+        await this.client.sendMessage(userId, media);
+        await this.client.sendMessage(userId, `✅ Sent expense data as *${fileName}*`);
+      } else {
+        await originalMessage.reply(media);
+        await originalMessage.reply(`✅ Sent expense data as ${fileName}`);
+      }
     } catch (error) {
       console.error("❌ Error sending Excel file:", error);
-      await originalMessage.reply(
-        "Sorry, there was an error generating the Excel file. Please try again."
-      );
+      if (this.client) {
+        await this.client.sendMessage(
+          userId,
+          "Sorry, there was an error generating the Excel file. Please try again."
+        );
+      } else {
+        await originalMessage.reply(
+          "Sorry, there was an error generating the Excel file. Please try again."
+        );
+      }
     }
   }
 }

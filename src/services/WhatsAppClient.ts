@@ -43,8 +43,8 @@ export class WhatsAppClient {
       puppeteer: puppeteerOptions,
     });
 
-    this.expenseService = new ExpenseService();
-    this.excelService = new ExcelService();
+    this.expenseService = new ExpenseService(this.client);
+    this.excelService = new ExcelService(this.client);
     this.mongoService = new MongoService();
 
     this.setupEventHandlers();
@@ -149,11 +149,13 @@ export class WhatsAppClient {
         if (message.body && !isNaN(parseFloat(message.body))) {
           const budget = parseFloat(message.body);
           await this.mongoService.setMonthlyBudget(userId, budget);
-          await message.reply(
-            `✅ Budget set to USD ${budget} for this month. Now you can start adding expenses.`
+          await this.client.sendMessage(
+            userId,
+            `*✅ Budget Set*\n*Amount:* USD ${budget.toFixed(2)}\nYou can now start adding expenses.`
           );
         } else {
-          await message.reply(
+          await this.client.sendMessage(
+            userId,
             "Welcome! Please enter your budget for this month (e.g., 1000)."
           );
         }
@@ -171,7 +173,8 @@ export class WhatsAppClient {
             this.mongoService
           );
         } else {
-          await message.reply(
+          await this.client.sendMessage(
+            userId,
             "❌ Sorry, only images are supported for expense tracking. Please send an image of a receipt."
           );
         }
@@ -192,14 +195,16 @@ export class WhatsAppClient {
             this.mongoService
           );
         } else {
-          await message.reply(
+          await this.client.sendMessage(
+            userId,
             `❌ Invalid expense format. Please use a format like "Coffee 10 usd" or send an image with a caption like "Groceries 25 usd".`
           );
         }
       }
     } catch (error) {
       console.error("❌ Error handling message:", error);
-      await message.reply(
+      await this.client.sendMessage(
+        message.from,
         "Sorry, there was an error processing your message. Please try again."
       );
     }
