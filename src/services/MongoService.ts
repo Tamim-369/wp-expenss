@@ -1,4 +1,4 @@
-import { Budget, Expense, Conversation, Counter } from "../models/ExpenseModel";
+import { Budget, Expense, Conversation, Counter, User } from "../models/ExpenseModel";
 import type { MonthlyTotal } from "../types/types";
 
 export class MongoService {
@@ -102,5 +102,46 @@ export class MongoService {
       { upsert: true, new: true }
     );
     return counter.seq;
+  }
+
+  // User state management methods
+  public async getUserState(userId: string): Promise<'new' | 'awaiting_budget' | 'awaiting_currency' | 'active'> {
+    const user = await User.findOne({ userId });
+    return user?.state || 'new';
+  }
+
+  public async setUserState(userId: string, state: 'new' | 'awaiting_budget' | 'awaiting_currency' | 'active'): Promise<void> {
+    await User.findOneAndUpdate(
+      { userId },
+      { state },
+      { upsert: true, new: true }
+    );
+  }
+
+  public async setUserCurrency(userId: string, currency: string): Promise<void> {
+    await User.findOneAndUpdate(
+      { userId },
+      { currency, state: 'active' },
+      { upsert: true, new: true }
+    );
+  }
+
+  public async getUserCurrency(userId: string): Promise<string> {
+    const user = await User.findOne({ userId });
+    return user?.currency || 'USD';
+  }
+
+  public async setMonthlyBudgetWithCurrency(userId: string, budget: number, currency: string): Promise<void> {
+    const currentMonth = new Date().toISOString().slice(0, 7);
+    await Budget.findOneAndUpdate(
+      { userId, month: currentMonth },
+      { budget, currency },
+      { upsert: true, new: true }
+    );
+  }
+
+  public async isUserActive(userId: string): Promise<boolean> {
+    const user = await User.findOne({ userId });
+    return user?.state === 'active';
   }
 }

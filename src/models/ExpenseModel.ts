@@ -63,3 +63,20 @@ const CounterSchema = new Schema<ICounter>({
 });
 
 export const Counter = model<ICounter>("Counter", CounterSchema);
+
+// User state for onboarding
+interface IUser extends Document {
+  userId: string;
+  state: 'new' | 'awaiting_budget' | 'awaiting_currency' | 'active';
+  currency?: string;
+  createdAt: Date;
+}
+
+const UserSchema = new Schema<IUser>({
+  userId: { type: String, required: true, unique: true },
+  state: { type: String, required: true, default: 'new' },
+  currency: { type: String },
+  createdAt: { type: Date, default: Date.now },
+});
+
+export const User = model<IUser>("User", UserSchema);

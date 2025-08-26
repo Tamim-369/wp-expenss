@@ -28,6 +28,10 @@ export class ExpenseService {
       const expenseData = await this.extractExpenseData(messageText);
 
       if (expenseData) {
+        // Use user's saved currency instead of detected currency
+        const userCurrency = await mongoService.getUserCurrency(originalMessage.from);
+        expenseData.currency = userCurrency;
+
         // round to 2 decimals
         expenseData.price = Math.round(expenseData.price * 100) / 100;
         const created = await this.addToMongo(
@@ -120,6 +124,10 @@ export class ExpenseService {
       }
 
       if (finalExpense) {
+        // Use user's saved currency instead of detected currency
+        const userCurrency = await mongoService.getUserCurrency(originalMessage.from);
+        finalExpense.currency = userCurrency;
+
         finalExpense.price = Math.round(finalExpense.price * 100) / 100;
         const created = await this.addToMongo(
           finalExpense,
@@ -194,10 +202,14 @@ export class ExpenseService {
       if (!correctedExpenseData) {
         await this.client.sendMessage(
           originalMessage.from,
-          "❌ Could not parse the correction. Please use format like 'no it will be Coffee 15 usd'"
+          "❌ Could not parse the correction. Please use format like 'no it will be Coffee 15'"
         );
         return;
       }
+
+      // Use user's saved currency for correction
+      const userCurrency = await mongoService.getUserCurrency(userId);
+      correctedExpenseData.currency = userCurrency;
 
       // Get the most recent expense for this user
       const lastExpense = await Expense.findOne({ userId }).sort({
@@ -280,19 +292,26 @@ export class ExpenseService {
     budget: number,
     remaining: number
   ): string {
-    const numLine = number ? `*#${this.padNumber(number)}*\n` : "";
-    return (
-      `*✅ Expense Added*\n` +
-      numLine +
-      `*Item:* ${item}\n` +
-      `*Price:* ${currency} ${this.money(price)}\n` +
-      `*Date:* ${date}\n\n` +
-      `*${month} ${year} Summary*\n` +
-      `*Total:* ${totalCurrency} ${this.money(totalAmount)}\n` +
-      `*Expenses:* ${expenseCount} items\n` +
-      `*Budget:* USD ${this.money(budget)}\n` +
-      `*Remaining:* USD ${this.money(remaining)}`
-    );
+    const dailyLimit = Math.round((budget / new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0).getDate()) * 100) / 100;
+    const isOnTrack = remaining > 0;
+
+    let reply = `#${this.padNumber(number)} ${item}: ${this.money(price)} ${currency} ✅\n`;
+    reply += `${month} ${year} → Spent: ${this.money(totalAmount)} / ${this.money(budget)} ${currency}\n`;
+    reply += `Remaining: ${this.money(remaining)} ${currency}\n`;
+    reply += `🎯 Daily limit: ${this.money(dailyLimit)} ${currency}\n`;
+
+    if (isOnTrack) {
+      reply += `✅ You're on track. Keep it up!`;
+    } else {
+      reply += `⚠️ Over budget! Consider reducing expenses.`;
+    }
+
+    // Add tip for first expense
+    if (number === 1) {
+      reply += `\n\nTip 💡 You can also scan expenses from images. Just send a photo of a receipt, bill, or ticket. Optional: add a caption like "Food" to label it.`;
+    }
+
+    return reply;
   }
 
   private buildUpdatedReply(
@@ -309,19 +328,21 @@ export class ExpenseService {
     budget: number,
     remaining: number
   ): string {
-    const numLine = number ? `*#${this.padNumber(number)}*\n` : "";
-    return (
-      `*✅ Expense Updated*\n` +
-      numLine +
-      `*Item:* ${item}\n` +
-      `*Price:* ${currency} ${this.money(price)}\n` +
-      `*Date:* ${date}\n\n` +
-      `*${month} ${year} Summary*\n` +
-      `*Total:* ${totalCurrency} ${this.money(totalAmount)}\n` +
-      `*Expenses:* ${expenseCount} items\n` +
-      `*Budget:* USD ${this.money(budget)}\n` +
-      `*Remaining:* USD ${this.money(remaining)}`
-    );
+    const dailyLimit = Math.round((budget / new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0).getDate()) * 100) / 100;
+    const isOnTrack = remaining > 0;
+
+    let reply = `#${this.padNumber(number)} ${item}: ${this.money(price)} ${currency} ✅ (Updated)\n`;
+    reply += `${month} ${year} → Spent: ${this.money(totalAmount)} / ${this.money(budget)} ${currency}\n`;
+    reply += `Remaining: ${this.money(remaining)} ${currency}\n`;
+    reply += `🎯 Daily limit: ${this.money(dailyLimit)} ${currency}\n`;
+
+    if (isOnTrack) {
+      reply += `✅ You're on track. Keep it up!`;
+    } else {
+      reply += `⚠️ Over budget! Consider reducing expenses.`;
+    }
+
+    return reply;
   }
 
   private async extractTextFromImage(imageUrl: string): Promise<string> {

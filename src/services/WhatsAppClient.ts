@@ -3,6 +3,7 @@ import qrcode from "qrcode-terminal";
 import { ExpenseService } from "./ExpenseService";
 import { ExcelService } from "./ExcelService";
 import { MongoService } from "./MongoService";
+import { CurrencyService } from "./CurrencyService";
 import mongoose from "mongoose";
 
 export class WhatsAppClient {
@@ -158,8 +159,11 @@ export class WhatsAppClient {
       const userId = message.from;
       const messageText = message.body?.toLowerCase() || "";
 
-      // Handle Excel export commands first
-      if (
+      // Get user state for onboarding flow
+      const userState = await this.mongoService.getUserState(userId);
+
+      // Handle Excel export commands (available for active users)
+      if (userState === 'active' && (
         messageText.includes("send expense info") ||
         messageText.includes("give excel file") ||
         messageText.includes("give my expense data") ||
@@ -170,13 +174,13 @@ export class WhatsAppClient {
         messageText.includes("monthly spend data") ||
         messageText.includes("full expense data") ||
         messageText.includes("all expense")
-      ) {
+      )) {
         await this.excelService.sendExcelFile(userId, message);
         return;
       }
 
-      // Handle correction commands
-      if (messageText.startsWith("no it will be")) {
+      // Handle correction commands (available for active users)
+      if (userState === 'active' && messageText.startsWith("no it will be")) {
         await this.expenseService.handleCorrection(
           message.body!,
           userId,
@@ -186,66 +190,113 @@ export class WhatsAppClient {
         return;
       }
 
-      // Check if user has set a budget
-      const hasBudget = await this.mongoService.hasMonthlyBudget(userId);
-      if (!hasBudget) {
+      // Onboarding flow
+      if (userState === 'new') {
+        // First message - welcome and ask for budget
+        console.log(`📤 Sending welcome message to: ${userId}`);
+        await this.client.sendMessage(
+          userId,
+          "Welcome 👋 What's your budget for this month? Example: 30000"
+        );
+        await this.mongoService.setUserState(userId, 'awaiting_budget');
+        return;
+      }
+
+      if (userState === 'awaiting_budget') {
+        // Second message - process budget and ask for currency
         if (message.body && !isNaN(parseFloat(message.body))) {
           const budget = parseFloat(message.body);
-          await this.mongoService.setMonthlyBudget(userId, budget);
-          console.log(`📤 Sending budget confirmation to: ${userId}`);
+          // Store budget temporarily, will be saved with currency later
+          await this.mongoService.setUserState(userId, 'awaiting_currency');
+
+          console.log(`📤 Sending currency request to: ${userId}`);
           await this.client.sendMessage(
             userId,
-            `*✅ Budget Set*\n*Amount:* USD ${budget.toFixed(2)}\nYou can now start adding expenses.`
+            `Great. Which currency will you use? Example: INR or USD\nNote: we only store expenses in this currency.`
           );
+
+          // Store budget in a temporary way (we'll update this when we get currency)
+          const currentMonth = new Date().toISOString().slice(0, 7);
+          await this.mongoService.setMonthlyBudgetWithCurrency(userId, budget, 'USD'); // temporary USD
+          return;
         } else {
-          console.log(`📤 Sending budget welcome message to: ${userId}`);
+          console.log(`📤 Sending budget error message to: ${userId}`);
           await this.client.sendMessage(
             userId,
-            "Welcome! Please enter your budget for this month (e.g., 1000)."
+            "Please enter a valid budget amount (numbers only). Example: 30000"
           );
+          return;
         }
-        return;
       }
 
-      // Handle media (image) messages
-      if (message.hasMedia) {
-        const media = await message.downloadMedia();
-        if (media && media.mimetype.startsWith("image/")) {
-          await this.expenseService.processImageMessage(
-            media,
-            message.body || "",
-            message,
-            this.mongoService
-          );
-        } else {
-          console.log(`📤 Sending image error message to: ${userId}`);
+      if (userState === 'awaiting_currency') {
+        // Third message - process currency and complete onboarding
+        const detectedCurrency = CurrencyService.detectCurrency(message.body || '');
+
+        if (detectedCurrency) {
+          await this.mongoService.setUserCurrency(userId, detectedCurrency);
+
+          // Update the budget with the correct currency
+          const budget = await this.mongoService.getMonthlyBudget(userId);
+          await this.mongoService.setMonthlyBudgetWithCurrency(userId, budget, detectedCurrency);
+
+          console.log(`📤 Sending currency confirmation to: ${userId}`);
           await this.client.sendMessage(
             userId,
-            "❌ Sorry, only images are supported for expense tracking. Please send an image of a receipt."
+            `Perfect. We'll use ${detectedCurrency}.\nNow add your first expense. Example: Grocery 100`
           );
+          return;
+        } else {
+          console.log(`📤 Sending currency error message to: ${userId}`);
+          await this.client.sendMessage(
+            userId,
+            "Please enter a valid currency. Examples: USD, EUR, INR, BDT, Taka, Rupee, Dollar"
+          );
+          return;
         }
-        return;
       }
 
-      // Handle text-based expense messages
-      if (message.body && message.body.trim()) {
-        // Basic validation to avoid processing invalid expense messages
-        const trimmedMessage = message.body.trim();
-        const hasNumber = /\d/.test(trimmedMessage);
-        const hasText = /[a-zA-Z]/.test(trimmedMessage);
+      // Active user - handle expenses
+      if (userState === 'active') {
+        // Handle media (image) messages
+        if (message.hasMedia) {
+          const media = await message.downloadMedia();
+          if (media && media.mimetype.startsWith("image/")) {
+            await this.expenseService.processImageMessage(
+              media,
+              message.body || "",
+              message,
+              this.mongoService
+            );
+          } else {
+            console.log(`📤 Sending image error message to: ${userId}`);
+            await this.client.sendMessage(
+              userId,
+              "❌ Sorry, only images are supported for expense tracking. Please send an image of a receipt."
+            );
+          }
+          return;
+        }
 
-        if (hasNumber && hasText) {
-          await this.expenseService.processExpenseMessage(
-            trimmedMessage,
-            message,
-            this.mongoService
-          );
-        } else {
-          console.log(`📤 Sending invalid format message to: ${userId}`);
-          await this.client.sendMessage(
-            userId,
-            `❌ Invalid expense format. Please use a format like "Coffee 10 usd" or send an image with a caption like "Groceries 25 usd".`
-          );
+        // Handle text-based expense messages
+        if (message.body && message.body.trim()) {
+          const trimmedMessage = message.body.trim();
+          const hasNumber = /\d/.test(trimmedMessage);
+          const hasText = /[a-zA-Z]/.test(trimmedMessage);
+
+          if (hasNumber && hasText) {
+            await this.expenseService.processExpenseMessage(
+              trimmedMessage,
+              message,
+              this.mongoService
+            );
+          } else {
+            console.log(`📤 Sending invalid format message to: ${userId}`);
+            await this.client.sendMessage(
+              userId,
+              `❌ Invalid expense format. Please use a format like "Coffee 10" or send an image with a caption.`
+            );
+          }
         }
       }
     } catch (error) {
