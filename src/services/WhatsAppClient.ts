@@ -380,8 +380,7 @@ export class WhatsAppClient {
             console.log(`📤 Sending invalid format message to: ${userId}`);
             await this.client.sendMessage(
               userId,
-              `Didn’t get that. Try: Grocery 100.
-               Want quick commands? Reply: Help`
+              `Didn’t get that. Try: Grocery 100.\nWant quick commands? Reply: Help`
             );
           }
         }
