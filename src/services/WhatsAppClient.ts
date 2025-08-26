@@ -43,7 +43,7 @@ export class WhatsAppClient {
     this.client = new Client({
       authStrategy: new LocalAuth({
         clientId: "expense-tracker-bot",
-        dataPath: "./.wwebjs_auth"
+        dataPath: "./.wwebjs_auth",
       }),
       puppeteer: puppeteerOptions,
     });
@@ -94,7 +94,9 @@ export class WhatsAppClient {
 
     this.client.on("ready", () => {
       console.log("✅ WhatsApp client is ready!");
-      console.log(`📱 Connected as: ${this.client.info?.pushname || 'Unknown'}`);
+      console.log(
+        `📱 Connected as: ${this.client.info?.pushname || "Unknown"}`
+      );
     });
 
     this.client.on("message", async (message) => {
@@ -104,7 +106,7 @@ export class WhatsAppClient {
     this.client.on("disconnected", (reason) => {
       console.log("❌ WhatsApp client disconnected:", reason);
       // Only attempt reconnection for certain disconnect reasons
-      if (reason !== 'LOGOUT') {
+      if (reason !== "LOGOUT") {
         console.log("🔄 Attempting to reconnect in 5 seconds...");
         setTimeout(() => {
           this.client
@@ -148,12 +150,17 @@ export class WhatsAppClient {
 
       // Clean up old processed messages (keep last 1000)
       if (this.processedMessages.size > 1000) {
-        const messagesToDelete = Array.from(this.processedMessages).slice(0, 500);
-        messagesToDelete.forEach(id => this.processedMessages.delete(id));
+        const messagesToDelete = Array.from(this.processedMessages).slice(
+          0,
+          500
+        );
+        messagesToDelete.forEach((id) => this.processedMessages.delete(id));
       }
 
       // Add unique message ID logging to detect duplicates
-      console.log(`📨 New message from ${message.from} (ID: ${messageId}): ${message.body}`);
+      console.log(
+        `📨 New message from ${message.from} (ID: ${messageId}): ${message.body}`
+      );
       console.log(`🎯 Processing message for userId: ${message.from}`);
 
       const userId = message.from;
@@ -163,48 +170,49 @@ export class WhatsAppClient {
       const userState = await this.mongoService.getUserState(userId);
 
       // Handle Excel export commands (available for active users)
-      if (userState === 'active' && (
-        messageText.includes("send expense info") ||
-        messageText.includes("give excel file") ||
-        messageText.includes("give my expense data") ||
-        messageText.includes("expnese in excel") ||
-        messageText.includes("expnese in sheet") ||
-        messageText.includes("excel sheet") ||
-        messageText.includes("google sheets") ||
-        messageText.includes("monthly spend data") ||
-        messageText.includes("full expense data") ||
-        messageText.includes("all expense")
-      )) {
+      if (
+        userState === "active" &&
+        (messageText.includes("send expense info") ||
+          messageText.includes("give excel file") ||
+          messageText.includes("give my expense data") ||
+          messageText.includes("expnese in excel") ||
+          messageText.includes("expnese in sheet") ||
+          messageText.includes("excel sheet") ||
+          messageText.includes("google sheets") ||
+          messageText.includes("monthly spend data") ||
+          messageText.includes("full expense data") ||
+          messageText.includes("all expense"))
+      ) {
         await this.excelService.sendExcelFile(userId, message);
         return;
       }
 
       // Handle budget updates (available for active users)
-      if (userState === 'active' && messageText.match(/^budget\s+\d+/i)) {
+      if (userState === "active" && messageText.match(/^budget\s+\d+/i)) {
         await this.handleBudgetUpdate(message.body!, userId, message);
         return;
       }
 
       // Handle currency updates (available for active users)
-      if (userState === 'active' && messageText.match(/^currency\s+\w+/i)) {
+      if (userState === "active" && messageText.match(/^currency\s+\w+/i)) {
         await this.handleCurrencyUpdate(message.body!, userId, message);
         return;
       }
 
       // Handle help command
-      if (userState === 'active' && messageText === 'help') {
+      if (userState === "active" && messageText === "help") {
         await this.handleHelpCommand(userId, message);
         return;
       }
 
       // Handle report generation
-      if (userState === 'active' && messageText === 'report') {
+      if (userState === "active" && messageText === "report") {
         await this.handleReportGeneration(userId, message);
         return;
       }
 
       // Handle correction commands (available for active users)
-      if (userState === 'active' && messageText.startsWith("no it will be")) {
+      if (userState === "active" && messageText.startsWith("no it will be")) {
         await this.expenseService.handleCorrection(
           message.body!,
           userId,
@@ -215,7 +223,10 @@ export class WhatsAppClient {
       }
 
       // Handle expense editing by number (e.g., "#001 Edit 400" or "#001 Coffee 400")
-      if (userState === 'active' && messageText.match(/^#\d+\s+(edit\s+\d+|[\w\s]+\s+\d+)/)) {
+      if (
+        userState === "active" &&
+        messageText.match(/^#\d+\s+(edit\s+\d+|[\w\s]+\s+\d+)/)
+      ) {
         await this.expenseService.handleExpenseEdit(
           message.body!,
           userId,
@@ -226,7 +237,7 @@ export class WhatsAppClient {
       }
 
       // Handle expense deletion by number (e.g., "#001 Delete")
-      if (userState === 'active' && messageText.match(/^#\d+\s+delete/i)) {
+      if (userState === "active" && messageText.match(/^#\d+\s+delete/i)) {
         await this.expenseService.handleExpenseDelete(
           message.body!,
           userId,
@@ -237,23 +248,23 @@ export class WhatsAppClient {
       }
 
       // Onboarding flow
-      if (userState === 'new') {
+      if (userState === "new") {
         // First message - welcome and ask for budget
         console.log(`📤 Sending welcome message to: ${userId}`);
         await this.client.sendMessage(
           userId,
           "Welcome 👋 What's your budget for this month? Example: 30000"
         );
-        await this.mongoService.setUserState(userId, 'awaiting_budget');
+        await this.mongoService.setUserState(userId, "awaiting_budget");
         return;
       }
 
-      if (userState === 'awaiting_budget') {
+      if (userState === "awaiting_budget") {
         // Second message - process budget and ask for currency
         if (message.body && !isNaN(parseFloat(message.body))) {
           const budget = parseFloat(message.body);
           // Store budget temporarily, will be saved with currency later
-          await this.mongoService.setUserState(userId, 'awaiting_currency');
+          await this.mongoService.setUserState(userId, "awaiting_currency");
 
           console.log(`📤 Sending currency request to: ${userId}`);
           await this.client.sendMessage(
@@ -263,7 +274,11 @@ export class WhatsAppClient {
 
           // Store budget in a temporary way (we'll update this when we get currency)
           const currentMonth = new Date().toISOString().slice(0, 7);
-          await this.mongoService.setMonthlyBudgetWithCurrency(userId, budget, 'USD'); // temporary USD
+          await this.mongoService.setMonthlyBudgetWithCurrency(
+            userId,
+            budget,
+            "USD"
+          ); // temporary USD
           return;
         } else {
           console.log(`📤 Sending budget error message to: ${userId}`);
@@ -275,16 +290,22 @@ export class WhatsAppClient {
         }
       }
 
-      if (userState === 'awaiting_currency') {
+      if (userState === "awaiting_currency") {
         // Third message - process currency and complete onboarding
-        const detectedCurrency = CurrencyService.detectCurrency(message.body || '');
+        const detectedCurrency = CurrencyService.detectCurrency(
+          message.body || ""
+        );
 
         if (detectedCurrency) {
           await this.mongoService.setUserCurrency(userId, detectedCurrency);
 
           // Update the budget with the correct currency
           const budget = await this.mongoService.getMonthlyBudget(userId);
-          await this.mongoService.setMonthlyBudgetWithCurrency(userId, budget, detectedCurrency);
+          await this.mongoService.setMonthlyBudgetWithCurrency(
+            userId,
+            budget,
+            detectedCurrency
+          );
 
           console.log(`📤 Sending currency confirmation to: ${userId}`);
           await this.client.sendMessage(
@@ -303,9 +324,9 @@ export class WhatsAppClient {
       }
 
       // Handle OCR confirmation responses
-      if (userState === 'awaiting_ocr_confirmation') {
+      if (userState === "awaiting_ocr_confirmation") {
         const handled = await this.expenseService.handleOCRConfirmation(
-          message.body || '',
+          message.body || "",
           userId,
           message,
           this.mongoService
@@ -322,7 +343,7 @@ export class WhatsAppClient {
       }
 
       // Active user - handle expenses
-      if (userState === 'active') {
+      if (userState === "active") {
         // Handle media (image) messages
         if (message.hasMedia) {
           const media = await message.downloadMedia();
@@ -359,7 +380,8 @@ export class WhatsAppClient {
             console.log(`📤 Sending invalid format message to: ${userId}`);
             await this.client.sendMessage(
               userId,
-              `❌ Invalid expense format. Please use a format like "Coffee 10" or send an image with a caption.`
+              `Didn’t get that. Try: Grocery 100.
+               Want quick commands? Reply: Help`
             );
           }
         }
@@ -373,32 +395,53 @@ export class WhatsAppClient {
     }
   }
 
-  private async handleBudgetUpdate(messageBody: string, userId: string, message: Message): Promise<void> {
+  private async handleBudgetUpdate(
+    messageBody: string,
+    userId: string,
+    message: Message
+  ): Promise<void> {
     try {
       const budgetMatch = messageBody.match(/budget\s+(\d+(?:\.\d+)?)/i);
       if (budgetMatch) {
         const newBudget = parseFloat(budgetMatch[1]!);
         const userCurrency = await this.mongoService.getUserCurrency(userId);
 
-        await this.mongoService.setMonthlyBudgetWithCurrency(userId, newBudget, userCurrency);
+        await this.mongoService.setMonthlyBudgetWithCurrency(
+          userId,
+          newBudget,
+          userCurrency
+        );
 
-        const currentMonth = new Date().toLocaleString("default", { month: "long" });
+        const currentMonth = new Date().toLocaleString("default", {
+          month: "long",
+        });
         const currentYear = new Date().getFullYear();
         const dailyLimit = CurrencyService.getDailyLimit(newBudget);
 
         console.log(`📤 Sending budget update confirmation to: ${userId}`);
         await this.client.sendMessage(
           userId,
-          `Budget set to ${newBudget.toFixed(2)} ${userCurrency} for ${currentMonth} ${currentYear} ✅\n🎯 Your daily limit is ${dailyLimit.toFixed(0)} ${userCurrency}`
+          `Budget set to ${newBudget.toFixed(
+            2
+          )} ${userCurrency} for ${currentMonth} ${currentYear} ✅\n🎯 Your daily limit is ${dailyLimit.toFixed(
+            0
+          )} ${userCurrency}`
         );
       }
     } catch (error) {
       console.error("❌ Error updating budget:", error);
-      await this.client.sendMessage(userId, "Sorry, there was an error updating your budget.");
+      await this.client.sendMessage(
+        userId,
+        "Sorry, there was an error updating your budget."
+      );
     }
   }
 
-  private async handleCurrencyUpdate(messageBody: string, userId: string, message: Message): Promise<void> {
+  private async handleCurrencyUpdate(
+    messageBody: string,
+    userId: string,
+    message: Message
+  ): Promise<void> {
     try {
       const currencyMatch = messageBody.match(/currency\s+(\w+)/i);
       if (currencyMatch) {
@@ -421,11 +464,17 @@ export class WhatsAppClient {
       }
     } catch (error) {
       console.error("❌ Error updating currency:", error);
-      await this.client.sendMessage(userId, "Sorry, there was an error updating your currency.");
+      await this.client.sendMessage(
+        userId,
+        "Sorry, there was an error updating your currency."
+      );
     }
   }
 
-  private async handleHelpCommand(userId: string, message: Message): Promise<void> {
+  private async handleHelpCommand(
+    userId: string,
+    message: Message
+  ): Promise<void> {
     try {
       const helpMessage = `*Quick Commands:*\n\n📝 *Add:* Grocery 100\n✏️ *Edit:* #001 Edit 80\n🗑️ *Delete:* #001 Delete\n💰 *Budget:* Budget 30000\n💱 *Currency:* Currency BDT\n📊 *Report:* Report (Excel file)\n📷 *Scan:* Send a receipt photo (optional caption like Food)\n🙋 *Help:* Help`;
 
@@ -433,13 +482,21 @@ export class WhatsAppClient {
       await this.client.sendMessage(userId, helpMessage);
     } catch (error) {
       console.error("❌ Error sending help:", error);
-      await this.client.sendMessage(userId, "Sorry, there was an error displaying help.");
+      await this.client.sendMessage(
+        userId,
+        "Sorry, there was an error displaying help."
+      );
     }
   }
 
-  private async handleReportGeneration(userId: string, message: Message): Promise<void> {
+  private async handleReportGeneration(
+    userId: string,
+    message: Message
+  ): Promise<void> {
     try {
-      const currentMonth = new Date().toLocaleString("default", { month: "long" });
+      const currentMonth = new Date().toLocaleString("default", {
+        month: "long",
+      });
       const currentYear = new Date().getFullYear();
 
       console.log(`📤 Sending report generation message to: ${userId}`);
@@ -457,7 +514,10 @@ export class WhatsAppClient {
       );
     } catch (error) {
       console.error("❌ Error generating report:", error);
-      await this.client.sendMessage(userId, "Sorry, there was an error generating your report.");
+      await this.client.sendMessage(
+        userId,
+        "Sorry, there was an error generating your report."
+      );
     }
   }
 
