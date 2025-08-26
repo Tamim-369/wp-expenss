@@ -89,46 +89,44 @@ export class ExpenseService {
   ): Promise<void> {
     try {
       const imageDataUrl = `data:${media.mimetype};base64,${media.data}`;
+      const userCurrency = await mongoService.getUserCurrency(originalMessage.from);
 
       let finalExpense: ExpenseData | null = null;
+      let isFromCaption = false;
+
+      // Case A: Image + Caption - prioritize caption
       if (caption.trim()) {
         finalExpense = await this.extractExpenseData(caption);
         if (finalExpense) {
           console.log("✅ Using caption-based expense data:", finalExpense);
+          isFromCaption = true;
         }
       }
 
+      // Case B, C, D: Image processing with confidence levels
       if (!finalExpense) {
-        const extractedText = await this.extractTextFromImage(imageDataUrl);
-        let textBasedExpense = null;
-        if (extractedText.trim()) {
-          textBasedExpense = await this.extractExpenseData(extractedText);
-        }
+        const ocrResult = await this.extractExpenseWithConfidence(imageDataUrl, caption);
 
-        let isTextGood = false;
-        if (extractedText.trim()) {
-          isTextGood = await this.verifyExtractedText(
-            imageDataUrl,
-            extractedText
-          );
-        }
-
-        if (isTextGood && textBasedExpense) {
-          finalExpense = textBasedExpense;
+        if (ocrResult.confidence >= 0.85) {
+          // Case B: High confidence - direct save
+          finalExpense = ocrResult.expense;
+          console.log("✅ High confidence OCR result:", finalExpense);
+        } else if (ocrResult.confidence >= 0.5) {
+          // Case C: Medium confidence - ask for confirmation
+          await this.handleUncertainOCR(ocrResult.expense!, originalMessage, mongoService, userCurrency);
+          return;
         } else {
-          finalExpense = await this.directExtractExpenseFromImage(
-            imageDataUrl,
-            caption
-          );
+          // Case D: Low confidence - ask for manual entry
+          await this.handleFailedOCR(originalMessage);
+          return;
         }
       }
 
       if (finalExpense) {
-        // Use user's saved currency instead of detected currency
-        const userCurrency = await mongoService.getUserCurrency(originalMessage.from);
+        // Use user's saved currency
         finalExpense.currency = userCurrency;
-
         finalExpense.price = Math.round(finalExpense.price * 100) / 100;
+
         const created = await this.addToMongo(
           finalExpense,
           originalMessage.from,
@@ -138,12 +136,10 @@ export class ExpenseService {
           originalMessage.from,
           finalExpense.date
         );
-        const budget = await mongoService.getMonthlyBudget(
-          originalMessage.from
-        );
+        const budget = await mongoService.getMonthlyBudget(originalMessage.from);
         const remaining = budget - monthlyTotal.totalAmount;
 
-        const replyMessage = this.buildAddedReply(
+        const replyMessage = this.buildImageExpenseReply(
           created.number,
           finalExpense.item,
           finalExpense.currency,
@@ -155,16 +151,12 @@ export class ExpenseService {
           monthlyTotal.totalAmount,
           monthlyTotal.expenseCount,
           budget,
-          remaining
+          remaining,
+          isFromCaption
         );
 
         console.log(`📤 Sending image expense reply to: ${originalMessage.from}`);
         await this.client.sendMessage(originalMessage.from, replyMessage);
-      } else {
-        await this.client.sendMessage(
-          originalMessage.from,
-          '❌ Could not extract expense information from the image. Please add a caption with details like "Groceries 25 usd" or try a clearer image.'
-        );
       }
     } catch (error) {
       console.error("❌ Error processing image message:", error);
@@ -515,6 +507,8 @@ If invalid or unclear: {"error": "invalid"}`;
       const prompt = `You are a JSON parser. Extract expense information from: "${text}"
 
 IMPORTANT: Return ONLY valid JSON, no code blocks, no explanations, no markdown.
+- Item names can be multiple words (e.g., "Gari Bhara", "Ice Cream", "Bus Fare")
+- The price is usually the last number in the text
 - If text mentions total or full amount, prioritize that.
 
 Format: {"item": "name", "price": number, "currency": "USD"}
@@ -522,20 +516,22 @@ If invalid: {"error": "invalid"}
 
 Examples:
 "Coffee 10 dollar" -> {"item": "Coffee", "price": 10.00, "currency": "USD"}
-"Potato $5" -> {"item": "Potato", "price": 5.00, "currency": "USD"}`;
+"Gari Bhara 500" -> {"item": "Gari Bhara", "price": 500.00, "currency": "USD"}
+"Ice cream cone 25 taka" -> {"item": "Ice cream cone", "price": 25.00, "currency": "BDT"}
+"Bus fare to dhaka 150" -> {"item": "Bus fare to dhaka", "price": 150.00, "currency": "USD"}`;
 
       const completion = await this.groq.chat.completions.create({
         messages: [
           {
             role: "system",
             content:
-              "You are a JSON parser. Return only valid JSON objects, never code blocks or explanations.",
+              "You are a JSON parser. Return only valid JSON objects, never code blocks or explanations. Item names can be multiple words.",
           },
           { role: "user", content: prompt },
         ],
         model: "llama-3.1-8b-instant",
         temperature: 0,
-        max_tokens: 100,
+        max_tokens: 150,
       });
 
       const response = completion.choices[0]?.message?.content?.trim();
@@ -583,6 +579,378 @@ Examples:
       return { id: String(saved._id), number: seq };
     } catch (error) {
       console.error("❌ Error adding to MongoDB:", error);
+      throw error;
+    }
+  }
+
+  // New methods for image processing with confidence levels
+  private async extractExpenseWithConfidence(
+    imageUrl: string,
+    caption: string
+  ): Promise<{ expense: ExpenseData | null; confidence: number }> {
+    try {
+      const prompt = `You are an expense extractor from receipt images. Analyze the image to extract expense info and provide confidence.
+
+IMPORTANT:
+- If a total price, subtotal, or full amount is present, use THAT as the price
+- Item: A summary description like "Groceries", "Dinner", or based on receipt content
+- Use caption for context if provided: "${caption.replace(/"/g, '\\"')}"
+- Provide confidence score (0.0 to 1.0) based on image clarity and text readability
+
+Return ONLY valid JSON:
+{"item": "name", "price": number, "currency": "USD", "confidence": 0.95}
+If invalid or unclear: {"error": "invalid", "confidence": 0.0}`;
+
+      const completion = await this.groq.chat.completions.create({
+        messages: [
+          {
+            role: "system",
+            content: "Return only valid JSON objects with confidence scores, never code blocks or explanations.",
+          },
+          {
+            role: "user",
+            content: [
+              {
+                type: "text",
+                text: prompt,
+              },
+              {
+                type: "image_url",
+                image_url: {
+                  url: imageUrl,
+                },
+              },
+            ],
+          },
+        ],
+        model: "meta-llama/llama-4-maverick-17b-128e-instruct",
+        temperature: 0.1,
+        max_tokens: 200,
+      });
+
+      const response = completion.choices[0]?.message?.content?.trim();
+      if (!response) {
+        return { expense: null, confidence: 0.0 };
+      }
+
+      console.log("🤖 Groq OCR with confidence response:", response);
+      const cleanedResponse = response
+        .replace(/```json\n?/g, "")
+        .replace(/```\n?/g, "")
+        .trim();
+      const parsed = JSON.parse(cleanedResponse);
+
+      if (parsed.error || !parsed.item || !parsed.price) {
+        return { expense: null, confidence: parsed.confidence || 0.0 };
+      }
+
+      const expense: ExpenseData = {
+        item: parsed.item,
+        price: parsed.price,
+        currency: parsed.currency || "USD",
+        date: new Date().toISOString().split("T")[0] || "",
+      };
+
+      return { expense, confidence: parsed.confidence || 0.5 };
+    } catch (error) {
+      console.error("❌ Error extracting expense with confidence:", error);
+      return { expense: null, confidence: 0.0 };
+    }
+  }
+
+  private async handleUncertainOCR(
+    expense: ExpenseData,
+    originalMessage: Message,
+    mongoService: MongoService,
+    userCurrency: string
+  ): Promise<void> {
+    try {
+      // Store the uncertain expense temporarily for confirmation
+      await mongoService.storePendingExpense(originalMessage.from, expense);
+
+      console.log(`📤 Sending OCR confirmation request to: ${originalMessage.from}`);
+      await this.client.sendMessage(
+        originalMessage.from,
+        `I'm not sure about the total.\nDid you mean ${expense.price.toFixed(2)} ${userCurrency}?\n\nReply with:\n*Yes* → Save it\n*No* → Cancel`
+      );
+    } catch (error) {
+      console.error("❌ Error handling uncertain OCR:", error);
+      await this.client.sendMessage(
+        originalMessage.from,
+        "Sorry, there was an error processing your image. Please try again."
+      );
+    }
+  }
+
+  private async handleFailedOCR(originalMessage: Message): Promise<void> {
+    try {
+      console.log(`📤 Sending OCR failure message to: ${originalMessage.from}`);
+      await this.client.sendMessage(
+        originalMessage.from,
+        `I couldn't read the amount from this image.\n\nMake sure:\n• Full bill is in frame\n• Good light, no blur\n• Numbers are visible\n\nOr, send manually like: Travel 500`
+      );
+    } catch (error) {
+      console.error("❌ Error handling failed OCR:", error);
+    }
+  }
+
+  private buildImageExpenseReply(
+    number: number,
+    item: string,
+    currency: string,
+    price: number,
+    date: string,
+    month: string,
+    year: number,
+    totalCurrency: string,
+    totalAmount: number,
+    expenseCount: number,
+    budget: number,
+    remaining: number,
+    isFromCaption: boolean
+  ): string {
+    const dailyLimit = Math.round((budget / new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0).getDate()) * 100) / 100;
+    const isOverDailyLimit = price > dailyLimit;
+
+    let reply = `#${this.padNumber(number)} ${item}: ${this.money(price)} ${currency} 📷 ✅\n`;
+    reply += `${month} ${year} → Spent: ${this.money(totalAmount)} / ${this.money(budget)} ${currency}\n`;
+    reply += `Remaining: ${this.money(remaining)} ${currency}\n`;
+    reply += `🎯 Daily limit: ${this.money(dailyLimit)} ${currency}\n`;
+
+    if (isOverDailyLimit) {
+      reply += `⚠️ You're above your daily limit. Try to save tomorrow.`;
+    } else if (remaining > 0) {
+      reply += `✅ You're on track. Keep it up!`;
+    } else {
+      reply += `⚠️ Over budget! Consider reducing expenses.`;
+    }
+
+    return reply;
+  }
+
+  // Method to handle OCR confirmation responses
+  public async handleOCRConfirmation(
+    response: string,
+    userId: string,
+    originalMessage: Message,
+    mongoService: MongoService
+  ): Promise<boolean> {
+    try {
+      const normalizedResponse = response.toLowerCase().trim();
+
+      if (normalizedResponse === 'yes' || normalizedResponse === 'y') {
+        // Get pending expense and save it
+        const pendingExpense = await mongoService.getPendingExpense(userId);
+        if (pendingExpense) {
+          const userCurrency = await mongoService.getUserCurrency(userId);
+          pendingExpense.currency = userCurrency;
+
+          const created = await this.addToMongo(pendingExpense, userId, mongoService);
+          const monthlyTotal = await mongoService.calculateMonthlyTotal(userId, pendingExpense.date);
+          const budget = await mongoService.getMonthlyBudget(userId);
+          const remaining = budget - monthlyTotal.totalAmount;
+
+          const replyMessage = this.buildImageExpenseReply(
+            created.number,
+            pendingExpense.item,
+            pendingExpense.currency,
+            pendingExpense.price,
+            pendingExpense.date,
+            monthlyTotal.month,
+            monthlyTotal.year,
+            monthlyTotal.currency,
+            monthlyTotal.totalAmount,
+            monthlyTotal.expenseCount,
+            budget,
+            remaining,
+            false
+          );
+
+          await this.client.sendMessage(originalMessage.from, replyMessage);
+          await mongoService.clearPendingExpense(userId);
+          return true;
+        }
+      } else if (normalizedResponse === 'no' || normalizedResponse === 'n') {
+        await this.client.sendMessage(
+          originalMessage.from,
+          "Please retake the photo clearly, or send manually like: Food 1180"
+        );
+        await mongoService.clearPendingExpense(userId);
+        return true;
+      }
+
+      return false;
+    } catch (error) {
+      console.error("❌ Error handling OCR confirmation:", error);
+      return false;
+    }
+  }
+
+  // Method to handle expense editing by number
+  public async handleExpenseEdit(
+    messageBody: string,
+    userId: string,
+    originalMessage: Message,
+    mongoService: MongoService
+  ): Promise<void> {
+    try {
+      // Parse the edit command: "#001 Edit 400" or "#001 Coffee 400"
+      const editMatch = messageBody.match(/^#(\d+)\s+(.*)/i);
+      if (!editMatch) {
+        await this.client.sendMessage(
+          originalMessage.from,
+          "❌ Invalid edit format. Use: #001 Edit 400 or #001 Coffee 400"
+        );
+        return;
+      }
+
+      const expenseNumber = parseInt(editMatch[1]!);
+      const editContent = editMatch[2]!.trim();
+
+      // Find the expense by number and user
+      const existingExpense = await Expense.findOne({
+        userId,
+        number: expenseNumber
+      });
+
+      if (!existingExpense) {
+        await this.client.sendMessage(
+          originalMessage.from,
+          `❌ Expense #${this.padNumber(expenseNumber)} not found.`
+        );
+        return;
+      }
+
+      let newItem = existingExpense.item;
+      let newPrice = existingExpense.price;
+
+      // Check if it's a simple price edit (e.g., "Edit 400")
+      if (editContent.toLowerCase().startsWith('edit ')) {
+        const priceMatch = editContent.match(/edit\s+(\d+(?:\.\d+)?)/i);
+        if (priceMatch) {
+          newPrice = parseFloat(priceMatch[1]!);
+        } else {
+          await this.client.sendMessage(
+            originalMessage.from,
+            "❌ Invalid edit format. Use: #001 Edit 400"
+          );
+          return;
+        }
+      } else {
+        // Full expense edit (e.g., "Coffee 400")
+        const expenseData = await this.extractExpenseData(editContent);
+        if (expenseData) {
+          newItem = expenseData.item;
+          newPrice = expenseData.price;
+        } else {
+          await this.client.sendMessage(
+            originalMessage.from,
+            "❌ Could not parse the edit. Use format like: #001 Coffee 400"
+          );
+          return;
+        }
+      }
+
+      // Use user's saved currency
+      const userCurrency = await mongoService.getUserCurrency(userId);
+      newPrice = Math.round(newPrice * 100) / 100;
+
+      // Update the expense
+      await Expense.findByIdAndUpdate(existingExpense._id, {
+        item: newItem,
+        price: newPrice,
+        currency: userCurrency,
+      });
+
+      // Send simple confirmation message
+      const replyMessage = `Updated. #${this.padNumber(expenseNumber)} ${newItem}: ${this.money(newPrice)} ${userCurrency}`;
+
+      console.log(`📤 Sending expense edit confirmation to: ${originalMessage.from}`);
+      await this.client.sendMessage(originalMessage.from, replyMessage);
+
+    } catch (error) {
+      console.error("❌ Error handling expense edit:", error);
+      await this.client.sendMessage(
+        originalMessage.from,
+        "Sorry, there was an error editing your expense. Please try again."
+      );
+      throw error;
+    }
+  }
+
+  // Method to handle expense deletion by number
+  public async handleExpenseDelete(
+    messageBody: string,
+    userId: string,
+    originalMessage: Message,
+    mongoService: MongoService
+  ): Promise<void> {
+    try {
+      // Parse the delete command: "#001 Delete"
+      const deleteMatch = messageBody.match(/^#(\d+)\s+delete/i);
+      if (!deleteMatch) {
+        await this.client.sendMessage(
+          originalMessage.from,
+          "❌ Invalid delete format. Use: #001 Delete"
+        );
+        return;
+      }
+
+      const expenseNumber = parseInt(deleteMatch[1]!);
+
+      // Find the expense by number and user
+      const existingExpense = await Expense.findOne({
+        userId,
+        number: expenseNumber
+      });
+
+      if (!existingExpense) {
+        await this.client.sendMessage(
+          originalMessage.from,
+          `❌ Expense #${this.padNumber(expenseNumber)} not found.`
+        );
+        return;
+      }
+
+      // Delete the expense
+      await Expense.findByIdAndDelete(existingExpense._id);
+
+      // Calculate updated monthly totals after deletion
+      const monthlyTotal = await mongoService.calculateMonthlyTotal(
+        userId,
+        existingExpense.date
+      );
+      const budget = await mongoService.getMonthlyBudget(userId);
+      const userCurrency = await mongoService.getUserCurrency(userId);
+      const remaining = budget - monthlyTotal.totalAmount;
+
+      // Calculate daily limit based on remaining days
+      const today = new Date();
+      const lastDayOfMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
+      const remainingDays = lastDayOfMonth - today.getDate() + 1; // including today
+      const dailyLimit = remaining / remainingDays;
+
+      // Build and send confirmation message
+      let replyMessage = `Deleted ❌\n#${this.padNumber(expenseNumber)} ${existingExpense.item}: ${this.money(existingExpense.price)} ${userCurrency}\n`;
+      replyMessage += `${monthlyTotal.month} ${monthlyTotal.year} → Spent: ${this.money(monthlyTotal.totalAmount)} / ${this.money(budget)} ${userCurrency}\n`;
+      replyMessage += `Remaining: ${this.money(remaining)} ${userCurrency}\n`;
+      replyMessage += `🎯 Daily limit: ${this.money(dailyLimit)} ${userCurrency}\n`;
+
+      if (remaining > 0) {
+        replyMessage += `✅ You're on track. Keep it up!`;
+      } else {
+        replyMessage += `⚠️ Over budget! Consider reducing expenses.`;
+      }
+
+      console.log(`📤 Sending expense delete confirmation to: ${originalMessage.from}`);
+      await this.client.sendMessage(originalMessage.from, replyMessage);
+
+    } catch (error) {
+      console.error("❌ Error handling expense delete:", error);
+      await this.client.sendMessage(
+        originalMessage.from,
+        "Sorry, there was an error deleting your expense. Please try again."
+      );
       throw error;
     }
   }

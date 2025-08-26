@@ -67,4 +67,25 @@ export class CurrencyService {
         const daysInMonth = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0).getDate();
         return Math.round((monthlyBudget / daysInMonth) * 100) / 100;
     }
+
+    public static calculateDynamicDailyLimit(remainingBudget: number): number {
+        const today = new Date();
+        const lastDayOfMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
+        const remainingDays = lastDayOfMonth - today.getDate() + 1; // including today
+
+        if (remainingDays <= 0) return 0;
+        return Math.round((remainingBudget / remainingDays) * 100) / 100;
+    }
+
+    public static async getTodaysSpending(userId: string): Promise<number> {
+        const today = new Date().toISOString().split('T')[0];
+        const { Expense } = await import('../models/ExpenseModel');
+
+        const todaysExpenses = await Expense.find({
+            userId,
+            date: today
+        });
+
+        return todaysExpenses.reduce((total, expense) => total + expense.price, 0);
+    }
 }

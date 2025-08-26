@@ -179,9 +179,55 @@ export class WhatsAppClient {
         return;
       }
 
+      // Handle budget updates (available for active users)
+      if (userState === 'active' && messageText.match(/^budget\s+\d+/i)) {
+        await this.handleBudgetUpdate(message.body!, userId, message);
+        return;
+      }
+
+      // Handle currency updates (available for active users)
+      if (userState === 'active' && messageText.match(/^currency\s+\w+/i)) {
+        await this.handleCurrencyUpdate(message.body!, userId, message);
+        return;
+      }
+
+      // Handle help command
+      if (userState === 'active' && messageText === 'help') {
+        await this.handleHelpCommand(userId, message);
+        return;
+      }
+
+      // Handle report generation
+      if (userState === 'active' && messageText === 'report') {
+        await this.handleReportGeneration(userId, message);
+        return;
+      }
+
       // Handle correction commands (available for active users)
       if (userState === 'active' && messageText.startsWith("no it will be")) {
         await this.expenseService.handleCorrection(
+          message.body!,
+          userId,
+          message,
+          this.mongoService
+        );
+        return;
+      }
+
+      // Handle expense editing by number (e.g., "#001 Edit 400" or "#001 Coffee 400")
+      if (userState === 'active' && messageText.match(/^#\d+\s+(edit\s+\d+|[\w\s]+\s+\d+)/)) {
+        await this.expenseService.handleExpenseEdit(
+          message.body!,
+          userId,
+          message,
+          this.mongoService
+        );
+        return;
+      }
+
+      // Handle expense deletion by number (e.g., "#001 Delete")
+      if (userState === 'active' && messageText.match(/^#\d+\s+delete/i)) {
+        await this.expenseService.handleExpenseDelete(
           message.body!,
           userId,
           message,
@@ -256,6 +302,25 @@ export class WhatsAppClient {
         }
       }
 
+      // Handle OCR confirmation responses
+      if (userState === 'awaiting_ocr_confirmation') {
+        const handled = await this.expenseService.handleOCRConfirmation(
+          message.body || '',
+          userId,
+          message,
+          this.mongoService
+        );
+
+        if (!handled) {
+          console.log(`📤 Sending OCR confirmation help to: ${userId}`);
+          await this.client.sendMessage(
+            userId,
+            "Please reply with *Yes* to save the expense or *No* to cancel."
+          );
+        }
+        return;
+      }
+
       // Active user - handle expenses
       if (userState === 'active') {
         // Handle media (image) messages
@@ -305,6 +370,94 @@ export class WhatsAppClient {
         message.from,
         "Sorry, there was an error processing your message. Please try again."
       );
+    }
+  }
+
+  private async handleBudgetUpdate(messageBody: string, userId: string, message: Message): Promise<void> {
+    try {
+      const budgetMatch = messageBody.match(/budget\s+(\d+(?:\.\d+)?)/i);
+      if (budgetMatch) {
+        const newBudget = parseFloat(budgetMatch[1]!);
+        const userCurrency = await this.mongoService.getUserCurrency(userId);
+
+        await this.mongoService.setMonthlyBudgetWithCurrency(userId, newBudget, userCurrency);
+
+        const currentMonth = new Date().toLocaleString("default", { month: "long" });
+        const currentYear = new Date().getFullYear();
+        const dailyLimit = CurrencyService.getDailyLimit(newBudget);
+
+        console.log(`📤 Sending budget update confirmation to: ${userId}`);
+        await this.client.sendMessage(
+          userId,
+          `Budget set to ${newBudget.toFixed(2)} ${userCurrency} for ${currentMonth} ${currentYear} ✅\n🎯 Your daily limit is ${dailyLimit.toFixed(0)} ${userCurrency}`
+        );
+      }
+    } catch (error) {
+      console.error("❌ Error updating budget:", error);
+      await this.client.sendMessage(userId, "Sorry, there was an error updating your budget.");
+    }
+  }
+
+  private async handleCurrencyUpdate(messageBody: string, userId: string, message: Message): Promise<void> {
+    try {
+      const currencyMatch = messageBody.match(/currency\s+(\w+)/i);
+      if (currencyMatch) {
+        const newCurrency = CurrencyService.detectCurrency(currencyMatch[1]!);
+
+        if (newCurrency) {
+          await this.mongoService.setUserCurrency(userId, newCurrency);
+
+          console.log(`📤 Sending currency update confirmation to: ${userId}`);
+          await this.client.sendMessage(
+            userId,
+            `Currency updated to ${newCurrency} ✅\nAll future expenses will be stored in ${newCurrency}.`
+          );
+        } else {
+          await this.client.sendMessage(
+            userId,
+            "❌ Invalid currency. Examples: USD, EUR, INR, BDT, Taka, Rupee, Dollar"
+          );
+        }
+      }
+    } catch (error) {
+      console.error("❌ Error updating currency:", error);
+      await this.client.sendMessage(userId, "Sorry, there was an error updating your currency.");
+    }
+  }
+
+  private async handleHelpCommand(userId: string, message: Message): Promise<void> {
+    try {
+      const helpMessage = `*Quick Commands:*\n\n📝 *Add:* Grocery 100\n✏️ *Edit:* #001 Edit 80\n🗑️ *Delete:* #001 Delete\n💰 *Budget:* Budget 30000\n💱 *Currency:* Currency BDT\n📊 *Report:* Report (Excel file)\n📷 *Scan:* Send a receipt photo (optional caption like Food)\n🙋 *Help:* Help`;
+
+      console.log(`📤 Sending help message to: ${userId}`);
+      await this.client.sendMessage(userId, helpMessage);
+    } catch (error) {
+      console.error("❌ Error sending help:", error);
+      await this.client.sendMessage(userId, "Sorry, there was an error displaying help.");
+    }
+  }
+
+  private async handleReportGeneration(userId: string, message: Message): Promise<void> {
+    try {
+      const currentMonth = new Date().toLocaleString("default", { month: "long" });
+      const currentYear = new Date().getFullYear();
+
+      console.log(`📤 Sending report generation message to: ${userId}`);
+      await this.client.sendMessage(
+        userId,
+        `Generating your report for ${currentMonth} ${currentYear} 📊...`
+      );
+
+      // Generate and send the Excel report
+      await this.excelService.sendExcelFile(userId, message);
+
+      await this.client.sendMessage(
+        userId,
+        "Here's your monthly expense report in Excel."
+      );
+    } catch (error) {
+      console.error("❌ Error generating report:", error);
+      await this.client.sendMessage(userId, "Sorry, there was an error generating your report.");
     }
   }
 

@@ -105,12 +105,12 @@ export class MongoService {
   }
 
   // User state management methods
-  public async getUserState(userId: string): Promise<'new' | 'awaiting_budget' | 'awaiting_currency' | 'active'> {
+  public async getUserState(userId: string): Promise<'new' | 'awaiting_budget' | 'awaiting_currency' | 'active' | 'awaiting_ocr_confirmation'> {
     const user = await User.findOne({ userId });
     return user?.state || 'new';
   }
 
-  public async setUserState(userId: string, state: 'new' | 'awaiting_budget' | 'awaiting_currency' | 'active'): Promise<void> {
+  public async setUserState(userId: string, state: 'new' | 'awaiting_budget' | 'awaiting_currency' | 'active' | 'awaiting_ocr_confirmation'): Promise<void> {
     await User.findOneAndUpdate(
       { userId },
       { state },
@@ -143,5 +143,37 @@ export class MongoService {
   public async isUserActive(userId: string): Promise<boolean> {
     const user = await User.findOne({ userId });
     return user?.state === 'active';
+  }
+
+  // Pending expense methods for OCR confirmation
+  public async storePendingExpense(userId: string, expense: any): Promise<void> {
+    await User.findOneAndUpdate(
+      { userId },
+      {
+        pendingExpense: expense,
+        state: 'awaiting_ocr_confirmation'
+      },
+      { upsert: true, new: true }
+    );
+  }
+
+  public async getPendingExpense(userId: string): Promise<any | null> {
+    const user = await User.findOne({ userId });
+    return user?.pendingExpense || null;
+  }
+
+  public async clearPendingExpense(userId: string): Promise<void> {
+    await User.findOneAndUpdate(
+      { userId },
+      {
+        $unset: { pendingExpense: 1 },
+        state: 'active'
+      }
+    );
+  }
+
+  public async isAwaitingOCRConfirmation(userId: string): Promise<boolean> {
+    const user = await User.findOne({ userId });
+    return user?.state === 'awaiting_ocr_confirmation';
   }
 }
