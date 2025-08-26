@@ -10,6 +10,7 @@ export class WhatsAppClient {
   private expenseService: ExpenseService;
   private excelService: ExcelService;
   private mongoService: MongoService;
+  private processedMessages: Set<string> = new Set();
 
   constructor() {
     this.validateEnvVariables();
@@ -39,7 +40,10 @@ export class WhatsAppClient {
     }
 
     this.client = new Client({
-      authStrategy: new LocalAuth(),
+      authStrategy: new LocalAuth({
+        clientId: "expense-tracker-bot",
+        dataPath: "./.wwebjs_auth"
+      }),
       puppeteer: puppeteerOptions,
     });
 
@@ -79,8 +83,17 @@ export class WhatsAppClient {
       qrcode.generate(qr, { small: true });
     });
 
+    this.client.on("authenticated", () => {
+      console.log("🔐 WhatsApp authentication successful!");
+    });
+
+    this.client.on("auth_failure", (msg) => {
+      console.error("❌ WhatsApp authentication failed:", msg);
+    });
+
     this.client.on("ready", () => {
       console.log("✅ WhatsApp client is ready!");
+      console.log(`📱 Connected as: ${this.client.info?.pushname || 'Unknown'}`);
     });
 
     this.client.on("message", async (message) => {
@@ -89,16 +102,27 @@ export class WhatsAppClient {
 
     this.client.on("disconnected", (reason) => {
       console.log("❌ WhatsApp client disconnected:", reason);
-      setTimeout(() => {
-        this.client
-          .initialize()
-          .catch((error) => console.error("❌ Reconnection failed:", error));
-      }, 5000);
+      // Only attempt reconnection for certain disconnect reasons
+      if (reason !== 'LOGOUT') {
+        console.log("🔄 Attempting to reconnect in 5 seconds...");
+        setTimeout(() => {
+          this.client
+            .initialize()
+            .catch((error) => console.error("❌ Reconnection failed:", error));
+        }, 5000);
+      } else {
+        console.log("🚪 Logged out - manual QR scan required");
+      }
+    });
+
+    this.client.on("loading_screen", (percent, message) => {
+      console.log(`⏳ Loading... ${percent}% - ${message}`);
     });
   }
 
   private async handleMessage(message: Message): Promise<void> {
     try {
+      // Skip broadcast messages and group messages
       if (
         message.from === "status@broadcast" ||
         message.from.includes("@g.us")
@@ -106,11 +130,30 @@ export class WhatsAppClient {
         return;
       }
 
+      // Skip messages sent by this bot
       if (message.fromMe) {
         return;
       }
 
-      console.log(`📨 New message from ${message.from}: ${message.body}`);
+      // Check for duplicate message processing
+      const messageId = message.id._serialized;
+      if (this.processedMessages.has(messageId)) {
+        console.log(`⚠️ Skipping duplicate message: ${messageId}`);
+        return;
+      }
+
+      // Mark message as processed
+      this.processedMessages.add(messageId);
+
+      // Clean up old processed messages (keep last 1000)
+      if (this.processedMessages.size > 1000) {
+        const messagesToDelete = Array.from(this.processedMessages).slice(0, 500);
+        messagesToDelete.forEach(id => this.processedMessages.delete(id));
+      }
+
+      // Add unique message ID logging to detect duplicates
+      console.log(`📨 New message from ${message.from} (ID: ${messageId}): ${message.body}`);
+      console.log(`🎯 Processing message for userId: ${message.from}`);
 
       const userId = message.from;
       const messageText = message.body?.toLowerCase() || "";
@@ -149,11 +192,13 @@ export class WhatsAppClient {
         if (message.body && !isNaN(parseFloat(message.body))) {
           const budget = parseFloat(message.body);
           await this.mongoService.setMonthlyBudget(userId, budget);
+          console.log(`📤 Sending budget confirmation to: ${userId}`);
           await this.client.sendMessage(
             userId,
             `*✅ Budget Set*\n*Amount:* USD ${budget.toFixed(2)}\nYou can now start adding expenses.`
           );
         } else {
+          console.log(`📤 Sending budget welcome message to: ${userId}`);
           await this.client.sendMessage(
             userId,
             "Welcome! Please enter your budget for this month (e.g., 1000)."
@@ -173,6 +218,7 @@ export class WhatsAppClient {
             this.mongoService
           );
         } else {
+          console.log(`📤 Sending image error message to: ${userId}`);
           await this.client.sendMessage(
             userId,
             "❌ Sorry, only images are supported for expense tracking. Please send an image of a receipt."
@@ -195,6 +241,7 @@ export class WhatsAppClient {
             this.mongoService
           );
         } else {
+          console.log(`📤 Sending invalid format message to: ${userId}`);
           await this.client.sendMessage(
             userId,
             `❌ Invalid expense format. Please use a format like "Coffee 10 usd" or send an image with a caption like "Groceries 25 usd".`

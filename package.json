@@ -8,7 +8,8 @@
     "start": "bun run src/index.ts",
     "dev": "bun --watch src/index.ts",
     "build": "bun build src/index.ts --outdir ./dist --target bun",
-    "type-check": "tsc --noEmit"
+    "type-check": "tsc --noEmit",
+    "reset-session": "node scripts/reset-session.js"
   },
   "dependencies": {
     "dotenv": "^16.3.1",

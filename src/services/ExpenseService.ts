@@ -59,6 +59,7 @@ export class ExpenseService {
           remaining
         );
 
+        console.log(`📤 Sending expense reply to: ${originalMessage.from}`);
         await this.client.sendMessage(originalMessage.from, replyMessage);
       } else {
         await this.client.sendMessage(
@@ -149,6 +150,7 @@ export class ExpenseService {
           remaining
         );
 
+        console.log(`📤 Sending image expense reply to: ${originalMessage.from}`);
         await this.client.sendMessage(originalMessage.from, replyMessage);
       } else {
         await this.client.sendMessage(
@@ -242,6 +244,7 @@ export class ExpenseService {
         remaining
       );
 
+      console.log(`📤 Sending correction reply to: ${originalMessage.from}`);
       await this.client.sendMessage(originalMessage.from, replyMessage);
     } catch (error) {
       console.error("❌ Error handling correction:", error);

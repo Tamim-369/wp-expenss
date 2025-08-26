@@ -3,7 +3,7 @@ import XLSX from "xlsx";
 import { Expense } from "../models/ExpenseModel";
 
 export class ExcelService {
-  private client?: Client;
+  private client: Client | undefined;
 
   constructor(client?: Client) {
     this.client = client;
