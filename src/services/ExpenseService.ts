@@ -6,6 +6,7 @@ import type {
   IntentResult,
 } from "../types/types";
 import { Expense } from "../models/ExpenseModel";
+import { CurrencyService } from "./CurrencyService";
 import { MongoService } from "./MongoService";
 
 export class ExpenseService {
@@ -48,6 +49,9 @@ export class ExpenseService {
         );
         const remaining = budget - monthlyTotal.totalAmount;
 
+        const todaySpending = await CurrencyService.getTodaysSpending(originalMessage.from);
+        const dailyLimit = budget > 0 ? CurrencyService.calculateDynamicDailyLimit(remaining) : null;
+
         const replyMessage = this.buildAddedReply(
           created.number,
           expenseData.item,
@@ -60,7 +64,9 @@ export class ExpenseService {
           monthlyTotal.totalAmount,
           monthlyTotal.expenseCount,
           budget,
-          remaining
+          remaining,
+          dailyLimit,
+          todaySpending
         );
 
         console.log(`📤 Sending expense reply to: ${originalMessage.from}`);
@@ -139,6 +145,9 @@ export class ExpenseService {
         const budget = await mongoService.getMonthlyBudget(originalMessage.from);
         const remaining = budget - monthlyTotal.totalAmount;
 
+        const todaySpending = await CurrencyService.getTodaysSpending(originalMessage.from);
+        const dailyLimit = budget > 0 ? CurrencyService.calculateDynamicDailyLimit(remaining) : null;
+
         const replyMessage = this.buildImageExpenseReply(
           created.number,
           finalExpense.item,
@@ -152,6 +161,8 @@ export class ExpenseService {
           monthlyTotal.expenseCount,
           budget,
           remaining,
+          dailyLimit,
+          todaySpending,
           isFromCaption
         );
 
@@ -233,6 +244,9 @@ export class ExpenseService {
       const budget = await mongoService.getMonthlyBudget(userId);
       const remaining = budget - monthlyTotal.totalAmount;
 
+      const todaySpending = await CurrencyService.getTodaysSpending(userId);
+      const dailyLimit = budget > 0 ? CurrencyService.calculateDynamicDailyLimit(remaining) : null;
+
       const replyMessage = this.buildUpdatedReply(
         typeof lastExpense.number === "number" ? lastExpense.number : 0,
         correctedExpenseData.item,
@@ -245,7 +259,9 @@ export class ExpenseService {
         monthlyTotal.totalAmount,
         monthlyTotal.expenseCount,
         budget,
-        remaining
+        remaining,
+        dailyLimit,
+        todaySpending
       );
 
       console.log(`📤 Sending correction reply to: ${originalMessage.from}`);
@@ -282,20 +298,20 @@ export class ExpenseService {
     totalAmount: number,
     expenseCount: number,
     budget: number,
-    remaining: number
+    remaining: number,
+    dailyLimit: number | null,
+    todaySpending: number | null
   ): string {
-    const dailyLimit = Math.round((budget / new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0).getDate()) * 100) / 100;
-    const isOnTrack = remaining > 0;
-
     let reply = `#${this.padNumber(number)} ${item}: ${this.money(price)} ${currency} ✅\n`;
     reply += `${month} ${year} → Spent: ${this.money(totalAmount)} / ${this.money(budget)} ${currency}\n`;
     reply += `Remaining: ${this.money(remaining)} ${currency}\n`;
-    reply += `🎯 Daily limit: ${this.money(dailyLimit)} ${currency}\n`;
-
-    if (isOnTrack) {
-      reply += `✅ You're on track. Keep it up!`;
-    } else {
-      reply += `⚠️ Over budget! Consider reducing expenses.`;
+    if (budget > 0 && dailyLimit !== null && todaySpending !== null) {
+      reply += `🎯 Daily limit: ${this.money(dailyLimit)} ${currency}\n`;
+      if (todaySpending <= dailyLimit) {
+        reply += `✅ You're on track. Good job!`;
+      } else {
+        reply += `⚠️ You're above your daily limit. Try to save tomorrow.`;
+      }
     }
 
     // Add tip for first expense
@@ -318,20 +334,20 @@ export class ExpenseService {
     totalAmount: number,
     expenseCount: number,
     budget: number,
-    remaining: number
+    remaining: number,
+    dailyLimit: number | null,
+    todaySpending: number | null
   ): string {
-    const dailyLimit = Math.round((budget / new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0).getDate()) * 100) / 100;
-    const isOnTrack = remaining > 0;
-
     let reply = `#${this.padNumber(number)} ${item}: ${this.money(price)} ${currency} ✅ (Updated)\n`;
     reply += `${month} ${year} → Spent: ${this.money(totalAmount)} / ${this.money(budget)} ${currency}\n`;
     reply += `Remaining: ${this.money(remaining)} ${currency}\n`;
-    reply += `🎯 Daily limit: ${this.money(dailyLimit)} ${currency}\n`;
-
-    if (isOnTrack) {
-      reply += `✅ You're on track. Keep it up!`;
-    } else {
-      reply += `⚠️ Over budget! Consider reducing expenses.`;
+    if (budget > 0 && dailyLimit !== null && todaySpending !== null) {
+      reply += `🎯 Daily limit: ${this.money(dailyLimit)} ${currency}\n`;
+      if (todaySpending <= dailyLimit) {
+        reply += `✅ You're on track. Good job!`;
+      } else {
+        reply += `⚠️ You're above your daily limit. Try to save tomorrow.`;
+      }
     }
 
     return reply;
@@ -707,22 +723,20 @@ If invalid or unclear: {"error": "invalid", "confidence": 0.0}`;
     expenseCount: number,
     budget: number,
     remaining: number,
+    dailyLimit: number | null,
+    todaySpending: number | null,
     isFromCaption: boolean
   ): string {
-    const dailyLimit = Math.round((budget / new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0).getDate()) * 100) / 100;
-    const isOverDailyLimit = price > dailyLimit;
-
     let reply = `#${this.padNumber(number)} ${item}: ${this.money(price)} ${currency} 📷 ✅\n`;
     reply += `${month} ${year} → Spent: ${this.money(totalAmount)} / ${this.money(budget)} ${currency}\n`;
     reply += `Remaining: ${this.money(remaining)} ${currency}\n`;
-    reply += `🎯 Daily limit: ${this.money(dailyLimit)} ${currency}\n`;
-
-    if (isOverDailyLimit) {
-      reply += `⚠️ You're above your daily limit. Try to save tomorrow.`;
-    } else if (remaining > 0) {
-      reply += `✅ You're on track. Keep it up!`;
-    } else {
-      reply += `⚠️ Over budget! Consider reducing expenses.`;
+    if (budget > 0 && dailyLimit !== null && todaySpending !== null) {
+      reply += `🎯 Daily limit: ${this.money(dailyLimit)} ${currency}\n`;
+      if (todaySpending <= dailyLimit) {
+        reply += `✅ You're on track. Good job!`;
+      } else {
+        reply += `⚠️ You're above your daily limit. Try to save tomorrow.`;
+      }
     }
 
     return reply;
@@ -746,16 +760,19 @@ If invalid or unclear: {"error": "invalid", "confidence": 0.0}`;
           pendingExpense.currency = userCurrency;
 
           const created = await this.addToMongo(pendingExpense, userId, mongoService);
-          const monthlyTotal = await mongoService.calculateMonthlyTotal(userId, pendingExpense.date);
+          const safeDate = pendingExpense.date || new Date().toISOString().split("T")[0];
+          const monthlyTotal = await mongoService.calculateMonthlyTotal(userId, safeDate);
           const budget = await mongoService.getMonthlyBudget(userId);
           const remaining = budget - monthlyTotal.totalAmount;
+          const todaySpending = await CurrencyService.getTodaysSpending(userId);
+          const dailyLimit = budget > 0 ? CurrencyService.calculateDynamicDailyLimit(remaining) : null;
 
           const replyMessage = this.buildImageExpenseReply(
             created.number,
             pendingExpense.item,
             pendingExpense.currency,
             pendingExpense.price,
-            pendingExpense.date,
+            safeDate,
             monthlyTotal.month,
             monthlyTotal.year,
             monthlyTotal.currency,
@@ -763,6 +780,8 @@ If invalid or unclear: {"error": "invalid", "confidence": 0.0}`;
             monthlyTotal.expenseCount,
             budget,
             remaining,
+            dailyLimit,
+            todaySpending,
             false
           );
 
@@ -862,8 +881,30 @@ If invalid or unclear: {"error": "invalid", "confidence": 0.0}`;
         currency: userCurrency,
       });
 
-      // Send simple confirmation message
-      const replyMessage = `Updated. #${this.padNumber(expenseNumber)} ${newItem}: ${this.money(newPrice)} ${userCurrency}`;
+      // Calculate updated totals and send detailed confirmation with dynamic daily limit
+      const todayStrForEdit = new Date().toISOString().slice(0, 10);
+      const monthlyTotal = await mongoService.calculateMonthlyTotal(userId, todayStrForEdit);
+      const budget = await mongoService.getMonthlyBudget(userId);
+      const remaining = budget - monthlyTotal.totalAmount;
+      const todaySpending = await CurrencyService.getTodaysSpending(userId);
+      const dailyLimit = budget > 0 ? CurrencyService.calculateDynamicDailyLimit(remaining) : null;
+
+      const replyMessage = this.buildUpdatedReply(
+        expenseNumber,
+        newItem,
+        userCurrency,
+        newPrice,
+        todayStrForEdit,
+        monthlyTotal.month,
+        monthlyTotal.year,
+        monthlyTotal.currency,
+        monthlyTotal.totalAmount,
+        monthlyTotal.expenseCount,
+        budget,
+        remaining,
+        dailyLimit,
+        todaySpending
+      );
 
       console.log(`📤 Sending expense edit confirmation to: ${originalMessage.from}`);
       await this.client.sendMessage(originalMessage.from, replyMessage);
@@ -924,22 +965,21 @@ If invalid or unclear: {"error": "invalid", "confidence": 0.0}`;
       const userCurrency = await mongoService.getUserCurrency(userId);
       const remaining = budget - monthlyTotal.totalAmount;
 
-      // Calculate daily limit based on remaining days
-      const today = new Date();
-      const lastDayOfMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
-      const remainingDays = lastDayOfMonth - today.getDate() + 1; // including today
-      const dailyLimit = remaining / remainingDays;
+      // Dynamic daily limit and today's spending
+      const dailyLimit = budget > 0 ? CurrencyService.calculateDynamicDailyLimit(remaining) : null;
+      const todaySpending = await CurrencyService.getTodaysSpending(userId);
 
       // Build and send confirmation message
       let replyMessage = `Deleted ❌\n#${this.padNumber(expenseNumber)} ${existingExpense.item}: ${this.money(existingExpense.price)} ${userCurrency}\n`;
       replyMessage += `${monthlyTotal.month} ${monthlyTotal.year} → Spent: ${this.money(monthlyTotal.totalAmount)} / ${this.money(budget)} ${userCurrency}\n`;
       replyMessage += `Remaining: ${this.money(remaining)} ${userCurrency}\n`;
-      replyMessage += `🎯 Daily limit: ${this.money(dailyLimit)} ${userCurrency}\n`;
-
-      if (remaining > 0) {
-        replyMessage += `✅ You're on track. Keep it up!`;
-      } else {
-        replyMessage += `⚠️ Over budget! Consider reducing expenses.`;
+      if (budget > 0 && dailyLimit !== null && todaySpending !== null) {
+        replyMessage += `🎯 Daily limit: ${this.money(dailyLimit)} ${userCurrency}\n`;
+        if (todaySpending <= dailyLimit) {
+          replyMessage += `✅ You're on track. Good job!`;
+        } else {
+          replyMessage += `⚠️ You're above your daily limit. Try to save tomorrow.`;
+        }
       }
 
       console.log(`📤 Sending expense delete confirmation to: ${originalMessage.from}`);

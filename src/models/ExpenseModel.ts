@@ -67,9 +67,10 @@ export const Counter = model<ICounter>("Counter", CounterSchema);
 // User state for onboarding
 interface IUser extends Document {
   userId: string;
-  state: 'new' | 'awaiting_budget' | 'awaiting_currency' | 'active' | 'awaiting_ocr_confirmation';
+  state: 'new' | 'awaiting_budget' | 'awaiting_currency' | 'active' | 'awaiting_ocr_confirmation' | 'awaiting_currency_change';
   currency?: string;
   pendingExpense?: any;
+  pendingCurrency?: string;
   createdAt: Date;
 }
 
@@ -78,6 +79,7 @@ const UserSchema = new Schema<IUser>({
   state: { type: String, required: true, default: 'new' },
   currency: { type: String },
   pendingExpense: { type: Schema.Types.Mixed },
+  pendingCurrency: { type: String },
   createdAt: { type: Date, default: Date.now },
 });
 

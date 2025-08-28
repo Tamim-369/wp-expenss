@@ -193,7 +193,7 @@ export class WhatsAppClient {
         return;
       }
 
-      // Handle currency updates (available for active users)
+      // Handle currency updates (available for active users) -> ask for confirmation
       if (userState === "active" && messageText.match(/^currency\s+\w+/i)) {
         await this.handleCurrencyUpdate(message.body!, userId, message);
         return;
@@ -249,68 +249,61 @@ export class WhatsAppClient {
 
       // Onboarding flow
       if (userState === "new") {
-        // First message - welcome and ask for budget
-        console.log(`📤 Sending welcome message to: ${userId}`);
+        // Step 1: ask for preferred currency first
+        const currentMonthName = new Date().toLocaleString("default", { month: "long" });
+        console.log(`📤 Sending currency-first welcome to: ${userId}`);
         await this.client.sendMessage(
           userId,
-          "Welcome 👋 What's your budget for this month? Example: 30000"
+          `👋 👋 Welcome to the ${currentMonthName} Budget Challenge!\nFirst, tell me your preferred currency.\n👉 Example: AED, USD, INR`
         );
-        await this.mongoService.setUserState(userId, "awaiting_budget");
+        await this.mongoService.setUserState(userId, "awaiting_currency");
         return;
       }
 
       if (userState === "awaiting_budget") {
-        // Second message - process budget and ask for currency
-        if (message.body && !isNaN(parseFloat(message.body))) {
-          const budget = parseFloat(message.body);
-          // Store budget temporarily, will be saved with currency later
-          await this.mongoService.setUserState(userId, "awaiting_currency");
+        // Step 3: process numeric monthly budget in user's chosen currency
+        const text = (message.body || "").trim();
+        const numeric = parseFloat(text);
+        if (text && !isNaN(numeric)) {
+          const userCurrency = await this.mongoService.getUserCurrency(userId);
+          await this.mongoService.setMonthlyBudgetWithCurrency(userId, numeric, userCurrency);
+          await this.mongoService.setUserState(userId, "active");
 
-          console.log(`📤 Sending currency request to: ${userId}`);
+          const currentMonthName = new Date().toLocaleString("default", { month: "long" });
+          const currentYear = new Date().getFullYear();
+          const dailyLimit = CurrencyService.getDailyLimit(numeric);
+
+          console.log(`📤 Confirmed budget setup for: ${userId}`);
           await this.client.sendMessage(
             userId,
-            `Great. Which currency will you use? Example: INR or USD\nNote: we only store expenses in this currency.`
+            `Budget set to ${numeric.toFixed(2)} ${userCurrency} for ${currentMonthName} ${currentYear} ✅\n🎯 Your daily limit is ${Math.round(dailyLimit).toString()} ${userCurrency}\n\nNow add your first expense. Example: Grocery 100`
           );
-
-          // Store budget in a temporary way (we'll update this when we get currency)
-          const currentMonth = new Date().toISOString().slice(0, 7);
-          await this.mongoService.setMonthlyBudgetWithCurrency(
-            userId,
-            budget,
-            "USD"
-          ); // temporary USD
           return;
         } else {
-          console.log(`📤 Sending budget error message to: ${userId}`);
+          console.log(`📤 Sending numeric budget validation to: ${userId}`);
+          const userCurrency = await this.mongoService.getUserCurrency(userId);
           await this.client.sendMessage(
             userId,
-            "Please enter a valid budget amount (numbers only). Example: 30000"
+            `Please enter a valid number only.\n👉 Example: If your budget is 2000 ${userCurrency}, type 2000`
           );
           return;
         }
       }
 
       if (userState === "awaiting_currency") {
-        // Third message - process currency and complete onboarding
+        // Step 2: process currency then ask for numeric budget
         const detectedCurrency = CurrencyService.detectCurrency(
           message.body || ""
         );
 
         if (detectedCurrency) {
           await this.mongoService.setUserCurrency(userId, detectedCurrency);
+          await this.mongoService.setUserState(userId, "awaiting_budget");
 
-          // Update the budget with the correct currency
-          const budget = await this.mongoService.getMonthlyBudget(userId);
-          await this.mongoService.setMonthlyBudgetWithCurrency(
-            userId,
-            budget,
-            detectedCurrency
-          );
-
-          console.log(`📤 Sending currency confirmation to: ${userId}`);
+          console.log(`📤 Asking for budget after currency for: ${userId}`);
           await this.client.sendMessage(
             userId,
-            `Perfect. We'll use ${detectedCurrency}.\nNow add your first expense. Example: Grocery 100`
+            `Great! We’ll use ${detectedCurrency} for your budget.\nYour monthly budget (after fixed costs like rent, bills, loans)?\n👉 Example: If your budget is 2000 ${detectedCurrency}, type 2000`
           );
           return;
         } else {
@@ -319,6 +312,32 @@ export class WhatsAppClient {
             userId,
             "Please enter a valid currency. Examples: USD, EUR, INR, BDT, Taka, Rupee, Dollar"
           );
+          return;
+        }
+      }
+
+      // Handle currency change confirmation responses
+      if (userState === "awaiting_currency_change") {
+        const normalized = (message.body || "").trim().toLowerCase();
+        if (normalized === "yes" || normalized === "y") {
+          const newCurrency = await this.mongoService.confirmCurrencyChange(userId);
+          if (newCurrency) {
+            console.log(`📤 Confirmed currency change for: ${userId}`);
+            await this.client.sendMessage(
+              userId,
+              `Currency updated to ${newCurrency} ✅\nAll future expenses will be stored in ${newCurrency}.`
+            );
+          } else {
+            await this.client.sendMessage(userId, "No pending currency change found.");
+          }
+          return;
+        } else if (normalized === "no" || normalized === "n") {
+          await this.mongoService.clearPendingCurrency(userId);
+          console.log(`📤 Cancelled currency change for: ${userId}`);
+          await this.client.sendMessage(userId, "Okay, cancelled the currency change.");
+          return;
+        } else {
+          await this.client.sendMessage(userId, "Please reply with Yes to confirm or No to cancel the currency change.");
           return;
         }
       }
@@ -444,15 +463,17 @@ export class WhatsAppClient {
     try {
       const currencyMatch = messageBody.match(/currency\s+(\w+)/i);
       if (currencyMatch) {
-        const newCurrency = CurrencyService.detectCurrency(currencyMatch[1]!);
+        const requested = currencyMatch[1]!;
+        const detectedCurrency = CurrencyService.detectCurrency(requested);
 
-        if (newCurrency) {
-          await this.mongoService.setUserCurrency(userId, newCurrency);
+        if (detectedCurrency) {
+          const currentCurrency = await this.mongoService.getUserCurrency(userId);
+          await this.mongoService.setPendingCurrency(userId, detectedCurrency);
 
-          console.log(`📤 Sending currency update confirmation to: ${userId}`);
+          console.log(`📤 Asking currency change confirmation to: ${userId}`);
           await this.client.sendMessage(
             userId,
-            `Currency updated to ${newCurrency} ✅\nAll future expenses will be stored in ${newCurrency}.`
+            `You're asking to change currency from ${currentCurrency} to ${detectedCurrency}.\nReply with *Yes* to confirm or *No* to cancel.`
           );
         } else {
           await this.client.sendMessage(

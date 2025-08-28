@@ -105,12 +105,12 @@ export class MongoService {
   }
 
   // User state management methods
-  public async getUserState(userId: string): Promise<'new' | 'awaiting_budget' | 'awaiting_currency' | 'active' | 'awaiting_ocr_confirmation'> {
+  public async getUserState(userId: string): Promise<'new' | 'awaiting_budget' | 'awaiting_currency' | 'active' | 'awaiting_ocr_confirmation' | 'awaiting_currency_change'> {
     const user = await User.findOne({ userId });
     return user?.state || 'new';
   }
 
-  public async setUserState(userId: string, state: 'new' | 'awaiting_budget' | 'awaiting_currency' | 'active' | 'awaiting_ocr_confirmation'): Promise<void> {
+  public async setUserState(userId: string, state: 'new' | 'awaiting_budget' | 'awaiting_currency' | 'active' | 'awaiting_ocr_confirmation' | 'awaiting_currency_change'): Promise<void> {
     await User.findOneAndUpdate(
       { userId },
       { state },
@@ -175,5 +175,37 @@ export class MongoService {
   public async isAwaitingOCRConfirmation(userId: string): Promise<boolean> {
     const user = await User.findOne({ userId });
     return user?.state === 'awaiting_ocr_confirmation';
+  }
+
+  // Pending currency change flow
+  public async setPendingCurrency(userId: string, currency: string): Promise<void> {
+    await User.findOneAndUpdate(
+      { userId },
+      { pendingCurrency: currency, state: 'awaiting_currency_change' },
+      { upsert: true, new: true }
+    );
+  }
+
+  public async getPendingCurrency(userId: string): Promise<string | null> {
+    const user = await User.findOne({ userId });
+    return user?.pendingCurrency || null;
+  }
+
+  public async confirmCurrencyChange(userId: string): Promise<string | null> {
+    const user = await User.findOne({ userId });
+    const newCurrency = user?.pendingCurrency || null;
+    if (!newCurrency) return null;
+    await User.findOneAndUpdate(
+      { userId },
+      { currency: newCurrency, $unset: { pendingCurrency: 1 }, state: 'active' }
+    );
+    return newCurrency;
+  }
+
+  public async clearPendingCurrency(userId: string): Promise<void> {
+    await User.findOneAndUpdate(
+      { userId },
+      { $unset: { pendingCurrency: 1 }, state: 'active' }
+    );
   }
 }
