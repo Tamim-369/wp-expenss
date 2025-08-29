@@ -15,6 +15,8 @@ export class WhatsAppClient {
   private reinitTimer: NodeJS.Timeout | null = null;
   private isReinitializing = false;
   private puppeteerOptions: any;
+  private isReady = false;
+  private loadingStuckTimer: NodeJS.Timeout | null = null;
 
   constructor() {
     this.validateEnvVariables();
@@ -146,6 +148,11 @@ export class WhatsAppClient {
       console.log(
         `📱 Connected as: ${this.client.info?.pushname || "Unknown"}`
       );
+      this.isReady = true;
+      if (this.loadingStuckTimer) {
+        clearTimeout(this.loadingStuckTimer);
+        this.loadingStuckTimer = null;
+      }
     });
 
     this.client.on("message", async (message) => {
@@ -154,11 +161,30 @@ export class WhatsAppClient {
 
     this.client.on("disconnected", (reason) => {
       console.log("❌ WhatsApp client disconnected:", reason);
+      this.isReady = false;
+      if (this.loadingStuckTimer) {
+        clearTimeout(this.loadingStuckTimer);
+        this.loadingStuckTimer = null;
+      }
       this.scheduleSafeReinit("disconnected:" + reason);
     });
 
-    this.client.on("loading_screen", (percent, message) => {
+    this.client.on("loading_screen", (percent: number | string, message: string) => {
       console.log(`⏳ Loading... ${percent}% - ${message}`);
+      const pct = Number(percent);
+      if (!Number.isNaN(pct) && pct >= 100) {
+        if (this.loadingStuckTimer) {
+          clearTimeout(this.loadingStuckTimer);
+          this.loadingStuckTimer = null;
+        }
+        // If not ready within 20s after hitting 100%, assume a stall and re-init
+        this.loadingStuckTimer = setTimeout(() => {
+          if (!this.isReady) {
+            console.warn("⚠️ Stuck at 'Loading... 100%'. Scheduling re-initialization.");
+            this.scheduleSafeReinit("stuck_loading_100");
+          }
+        }, 20000);
+      }
     });
   }
 
