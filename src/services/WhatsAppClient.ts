@@ -14,11 +14,12 @@ export class WhatsAppClient {
   private processedMessages: Set<string> = new Set();
   private reinitTimer: NodeJS.Timeout | null = null;
   private isReinitializing = false;
+  private puppeteerOptions: any;
 
   constructor() {
     this.validateEnvVariables();
 
-    const puppeteerOptions: any = {
+    this.puppeteerOptions = {
       headless: true,
       args: [
         "--no-sandbox",
@@ -38,27 +39,29 @@ export class WhatsAppClient {
     };
 
     if (process.env.CHROMIUM_PATH) {
-      puppeteerOptions.executablePath = process.env.CHROMIUM_PATH;
+      this.puppeteerOptions.executablePath = process.env.CHROMIUM_PATH;
     }
 
-
-    this.client = new Client({
-      authStrategy: new LocalAuth({
-        clientId: "expense-tracker-bot",
-        dataPath: "./.wwebjs_auth",
-      }),
-      // Auto restart on auth failures to keep session alive as long as WhatsApp allows
-      restartOnAuthFail: true,
-      takeoverOnConflict: true,
-      takeoverTimeoutMs: 0,
-      puppeteer: puppeteerOptions,
-    });
+    this.client = this.createClient();
 
     this.expenseService = new ExpenseService(this.client);
     this.excelService = new ExcelService(this.client);
     this.mongoService = new MongoService();
 
     this.setupEventHandlers();
+  }
+
+  private createClient(): Client {
+    return new Client({
+      authStrategy: new LocalAuth({
+        clientId: "expense-tracker-bot",
+        dataPath: "./.wwebjs_auth",
+      }),
+      restartOnAuthFail: true,
+      takeoverOnConflict: true,
+      takeoverTimeoutMs: 0,
+      puppeteer: this.puppeteerOptions,
+    });
   }
 
   private validateEnvVariables(): void {
@@ -107,6 +110,12 @@ export class WhatsAppClient {
       } catch (e) {
         console.warn("⚠️ Error during client.destroy(), continuing to re-init:", e);
       }
+      // Build a fresh client instance and rebind handlers
+      this.client = this.createClient();
+      this.expenseService = new ExpenseService(this.client);
+      this.excelService = new ExcelService(this.client);
+      this.setupEventHandlers();
+
       console.log("🚀 Initializing WhatsApp client...");
       await this.client.initialize();
       console.log("✅ Re-initialized WhatsApp client.");
