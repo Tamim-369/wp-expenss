@@ -45,6 +45,8 @@ export class WhatsAppClient {
         clientId: "expense-tracker-bot",
         dataPath: "./.wwebjs_auth",
       }),
+      // Auto restart on auth failures to keep session alive as long as WhatsApp allows
+      restartOnAuthFail: true,
       puppeteer: puppeteerOptions,
     });
 
@@ -90,6 +92,13 @@ export class WhatsAppClient {
 
     this.client.on("auth_failure", (msg) => {
       console.error("❌ WhatsApp authentication failed:", msg);
+      // Extra safety: try re-initializing after a short delay in addition to restartOnAuthFail
+      setTimeout(() => {
+        console.log("🔄 Re-initializing client after auth failure...");
+        this.client
+          .initialize()
+          .catch((err) => console.error("❌ Re-initialization after auth failure failed:", err));
+      }, 5000);
     });
 
     this.client.on("ready", () => {
@@ -105,17 +114,13 @@ export class WhatsAppClient {
 
     this.client.on("disconnected", (reason) => {
       console.log("❌ WhatsApp client disconnected:", reason);
-      // Only attempt reconnection for certain disconnect reasons
-      if (reason !== "LOGOUT") {
-        console.log("🔄 Attempting to reconnect in 5 seconds...");
-        setTimeout(() => {
-          this.client
-            .initialize()
-            .catch((error) => console.error("❌ Reconnection failed:", error));
-        }, 5000);
-      } else {
-        console.log("🚪 Logged out - manual QR scan required");
-      }
+      // Always attempt reconnection to avoid unintended logouts
+      console.log("🔄 Attempting to reconnect in 5 seconds...");
+      setTimeout(() => {
+        this.client
+          .initialize()
+          .catch((error) => console.error("❌ Reconnection failed:", error));
+      }, 5000);
     });
 
     this.client.on("loading_screen", (percent, message) => {
@@ -323,10 +328,7 @@ export class WhatsAppClient {
           const newCurrency = await this.mongoService.confirmCurrencyChange(userId);
           if (newCurrency) {
             console.log(`📤 Confirmed currency change for: ${userId}`);
-            await this.client.sendMessage(
-              userId,
-              `Currency updated to ${newCurrency} ✅\nAll future expenses will be stored in ${newCurrency}.`
-            );
+            await this.client.sendMessage(userId, `Done. New entries will use ${newCurrency}.`);
           } else {
             await this.client.sendMessage(userId, "No pending currency change found.");
           }
@@ -337,7 +339,7 @@ export class WhatsAppClient {
           await this.client.sendMessage(userId, "Okay, cancelled the currency change.");
           return;
         } else {
-          await this.client.sendMessage(userId, "Please reply with Yes to confirm or No to cancel the currency change.");
+          await this.client.sendMessage(userId, "Please reply with YES to confirm or NO to cancel the currency change.");
           return;
         }
       }
@@ -473,7 +475,7 @@ export class WhatsAppClient {
           console.log(`📤 Asking currency change confirmation to: ${userId}`);
           await this.client.sendMessage(
             userId,
-            `You're asking to change currency from ${currentCurrency} to ${detectedCurrency}.\nReply with *Yes* to confirm or *No* to cancel.`
+            `Change currency to ${detectedCurrency}? Existing entries stay in ${currentCurrency}.\nReply YES to confirm.`
           );
         } else {
           await this.client.sendMessage(

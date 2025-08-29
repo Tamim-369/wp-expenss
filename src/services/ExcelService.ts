@@ -53,7 +53,10 @@ export class ExcelService {
 
       const worksheet = XLSX.utils.json_to_sheet(
         expenses.map((exp) => ({
-          Number: typeof exp.number === "number" ? `#${String(exp.number).padStart(3, "0")}` : "",
+          Number:
+            typeof exp.number === "number"
+              ? `#${String(exp.number).padStart(3, "0")}`
+              : "",
           Date: exp.date,
           Item: exp.item,
           Price: (Math.round(exp.price * 100) / 100).toFixed(2),
@@ -72,10 +75,10 @@ export class ExcelService {
       );
       if (this.client) {
         await this.client.sendMessage(userId, media);
-        await this.client.sendMessage(userId, `✅ Sent expense data as *${fileName}*`);
+        // await this.client.sendMessage(userId, `✅ Sent expense data as *${fileName}*`);
       } else {
         await originalMessage.reply(media);
-        await originalMessage.reply(`✅ Sent expense data as ${fileName}`);
+        // await originalMessage.reply(`✅ Sent expense data as ${fileName}`);
       }
     } catch (error) {
       console.error("❌ Error sending Excel file:", error);
