@@ -12,6 +12,8 @@ export class WhatsAppClient {
   private excelService: ExcelService;
   private mongoService: MongoService;
   private processedMessages: Set<string> = new Set();
+  private reinitTimer: NodeJS.Timeout | null = null;
+  private isReinitializing = false;
 
   constructor() {
     this.validateEnvVariables();
@@ -28,7 +30,6 @@ export class WhatsAppClient {
         "--disable-gpu",
         "--disable-web-security",
         "--disable-features=VizDisplayCompositor",
-        "--single-process",
         "--disable-background-timer-throttling",
         "--disable-breakpad",
         "--disable-client-side-phishing-detection",
@@ -40,6 +41,7 @@ export class WhatsAppClient {
       puppeteerOptions.executablePath = process.env.CHROMIUM_PATH;
     }
 
+
     this.client = new Client({
       authStrategy: new LocalAuth({
         clientId: "expense-tracker-bot",
@@ -47,6 +49,8 @@ export class WhatsAppClient {
       }),
       // Auto restart on auth failures to keep session alive as long as WhatsApp allows
       restartOnAuthFail: true,
+      takeoverOnConflict: true,
+      takeoverTimeoutMs: 0,
       puppeteer: puppeteerOptions,
     });
 
@@ -80,6 +84,39 @@ export class WhatsAppClient {
     }
   }
 
+  // Ensures single, clean re-initialization sequence
+  private scheduleSafeReinit(trigger: string) {
+    if (this.reinitTimer) {
+      clearTimeout(this.reinitTimer);
+      this.reinitTimer = null;
+    }
+    console.log(`🔄 Attempting to reconnect in 5 seconds... (trigger: ${trigger})`);
+    this.reinitTimer = setTimeout(() => this.safeReinitialize(), 5000);
+  }
+
+  private async safeReinitialize() {
+    if (this.isReinitializing) {
+      console.log("⏳ Re-initialization already in progress. Skipping duplicate call.");
+      return;
+    }
+    this.isReinitializing = true;
+    try {
+      // Destroy existing client session to avoid navigation/context errors
+      try {
+        await this.client.destroy();
+      } catch (e) {
+        console.warn("⚠️ Error during client.destroy(), continuing to re-init:", e);
+      }
+      console.log("🚀 Initializing WhatsApp client...");
+      await this.client.initialize();
+      console.log("✅ Re-initialized WhatsApp client.");
+    } catch (error) {
+      console.error("❌ Re-initialization failed:", error);
+    } finally {
+      this.isReinitializing = false;
+    }
+  }
+
   private setupEventHandlers(): void {
     this.client.on("qr", (qr) => {
       console.log("📱 Scan this QR code with WhatsApp:");
@@ -92,13 +129,7 @@ export class WhatsAppClient {
 
     this.client.on("auth_failure", (msg) => {
       console.error("❌ WhatsApp authentication failed:", msg);
-      // Extra safety: try re-initializing after a short delay in addition to restartOnAuthFail
-      setTimeout(() => {
-        console.log("🔄 Re-initializing client after auth failure...");
-        this.client
-          .initialize()
-          .catch((err) => console.error("❌ Re-initialization after auth failure failed:", err));
-      }, 5000);
+      this.scheduleSafeReinit("auth_failure");
     });
 
     this.client.on("ready", () => {
@@ -114,13 +145,7 @@ export class WhatsAppClient {
 
     this.client.on("disconnected", (reason) => {
       console.log("❌ WhatsApp client disconnected:", reason);
-      // Always attempt reconnection to avoid unintended logouts
-      console.log("🔄 Attempting to reconnect in 5 seconds...");
-      setTimeout(() => {
-        this.client
-          .initialize()
-          .catch((error) => console.error("❌ Reconnection failed:", error));
-      }, 5000);
+      this.scheduleSafeReinit("disconnected:" + reason);
     });
 
     this.client.on("loading_screen", (percent, message) => {

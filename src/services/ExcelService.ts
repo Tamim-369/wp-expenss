@@ -1,5 +1,5 @@
 import { Client, Message, MessageMedia } from "whatsapp-web.js";
-import XLSX from "xlsx";
+import * as XLSX from "xlsx";
 import { Expense } from "../models/ExpenseModel";
 
 export class ExcelService {
