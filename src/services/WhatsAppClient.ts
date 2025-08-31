@@ -1,13 +1,16 @@
-import { Client, LocalAuth, Message, MessageMedia } from "whatsapp-web.js";
+import { Client as WWebClient, LocalAuth, Message as WWebMessage, MessageMedia as WWebMedia } from "whatsapp-web.js";
 import qrcode from "qrcode-terminal";
 import { ExpenseService } from "./ExpenseService";
 import { ExcelService } from "./ExcelService";
 import { MongoService } from "./MongoService";
 import { CurrencyService } from "./CurrencyService";
 import mongoose from "mongoose";
+import type { Client as WaClient, Message as WaMessage } from "../types/wa";
+import { MessageMedia as WaMessageMedia } from "../types/wa";
 
 export class WhatsAppClient {
-  private client: Client;
+  private client: WWebClient;
+  private adapterClient: WaClient;
   private expenseService: ExpenseService;
   private excelService: ExcelService;
   private mongoService: MongoService;
@@ -45,16 +48,17 @@ export class WhatsAppClient {
     }
 
     this.client = this.createClient();
+    this.adapterClient = this.createAdapterClient();
 
-    this.expenseService = new ExpenseService(this.client);
-    this.excelService = new ExcelService(this.client);
+    this.expenseService = new ExpenseService(this.adapterClient);
+    this.excelService = new ExcelService(this.adapterClient);
     this.mongoService = new MongoService();
 
     this.setupEventHandlers();
   }
 
-  private createClient(): Client {
-    return new Client({
+  private createClient(): WWebClient {
+    return new WWebClient({
       authStrategy: new LocalAuth({
         clientId: "expense-tracker-bot",
         dataPath: "./.wwebjs_auth",
@@ -64,6 +68,39 @@ export class WhatsAppClient {
       takeoverTimeoutMs: 0,
       puppeteer: this.puppeteerOptions,
     });
+  }
+
+  private createAdapterClient(): WaClient {
+    return {
+      sendMessage: async (to: string, content: string | WaMessageMedia): Promise<void> => {
+        if (typeof content === "string") {
+          await this.client.sendMessage(to, content);
+        } else {
+          const media = new WWebMedia(content.mimetype, content.data, content.filename);
+          await this.client.sendMessage(to, media as any);
+        }
+      },
+    };
+  }
+
+  private toMinimalMessage(msg: WWebMessage): WaMessage {
+    const minimal: WaMessage = {
+      from: msg.from,
+      body: msg.body,
+      hasMedia: Boolean((msg as any).hasMedia ?? false),
+      downloadMedia: async () => {
+        try {
+          const media = await msg.downloadMedia();
+          if (!media) return null as any;
+          // filename can be string | null in wwebjs
+          const filename = (media as any).filename ?? undefined;
+          return new WaMessageMedia(media.mimetype, media.data, filename);
+        } catch {
+          return null;
+        }
+      },
+    };
+    return minimal;
   }
 
   private validateEnvVariables(): void {
@@ -114,8 +151,9 @@ export class WhatsAppClient {
       }
       // Build a fresh client instance and rebind handlers
       this.client = this.createClient();
-      this.expenseService = new ExpenseService(this.client);
-      this.excelService = new ExcelService(this.client);
+      this.adapterClient = this.createAdapterClient();
+      this.expenseService = new ExpenseService(this.adapterClient);
+      this.excelService = new ExcelService(this.adapterClient);
       this.setupEventHandlers();
 
       console.log("🚀 Initializing WhatsApp client...");
@@ -156,7 +194,7 @@ export class WhatsAppClient {
     });
 
     this.client.on("message", async (message) => {
-      await this.handleMessage(message);
+      await this.handleMessage(message as unknown as WWebMessage);
     });
 
     this.client.on("disconnected", (reason) => {
@@ -188,7 +226,7 @@ export class WhatsAppClient {
     });
   }
 
-  private async handleMessage(message: Message): Promise<void> {
+  private async handleMessage(message: WWebMessage): Promise<void> {
     try {
       // Skip broadcast messages and group messages
       if (
@@ -248,31 +286,31 @@ export class WhatsAppClient {
           messageText.includes("full expense data") ||
           messageText.includes("all expense"))
       ) {
-        await this.excelService.sendExcelFile(userId, message);
+        await this.excelService.sendExcelFile(userId, this.toMinimalMessage(message));
         return;
       }
 
       // Handle budget updates (available for active users)
       if (userState === "active" && messageText.match(/^budget\s+\d+/i)) {
-        await this.handleBudgetUpdate(message.body!, userId, message);
+        await this.handleBudgetUpdate(message.body!, userId);
         return;
       }
 
       // Handle currency updates (available for active users) -> ask for confirmation
       if (userState === "active" && messageText.match(/^currency\s+\w+/i)) {
-        await this.handleCurrencyUpdate(message.body!, userId, message);
+        await this.handleCurrencyUpdate(message.body!, userId);
         return;
       }
 
       // Handle help command
       if (userState === "active" && messageText === "help") {
-        await this.handleHelpCommand(userId, message);
+        await this.handleHelpCommand(userId, this.toMinimalMessage(message));
         return;
       }
 
       // Handle report generation
       if (userState === "active" && messageText === "report") {
-        await this.handleReportGeneration(userId, message);
+        await this.handleReportGeneration(userId, this.toMinimalMessage(message));
         return;
       }
 
@@ -281,7 +319,7 @@ export class WhatsAppClient {
         await this.expenseService.handleCorrection(
           message.body!,
           userId,
-          message,
+          this.toMinimalMessage(message),
           this.mongoService
         );
         return;
@@ -295,7 +333,7 @@ export class WhatsAppClient {
         await this.expenseService.handleExpenseEdit(
           message.body!,
           userId,
-          message,
+          this.toMinimalMessage(message),
           this.mongoService
         );
         return;
@@ -306,7 +344,7 @@ export class WhatsAppClient {
         await this.expenseService.handleExpenseDelete(
           message.body!,
           userId,
-          message,
+          this.toMinimalMessage(message),
           this.mongoService
         );
         return;
@@ -409,7 +447,7 @@ export class WhatsAppClient {
         const handled = await this.expenseService.handleOCRConfirmation(
           message.body || "",
           userId,
-          message,
+          this.toMinimalMessage(message),
           this.mongoService
         );
 
@@ -426,13 +464,13 @@ export class WhatsAppClient {
       // Active user - handle expenses
       if (userState === "active") {
         // Handle media (image) messages
-        if (message.hasMedia) {
+        if ((message as any).hasMedia) {
           const media = await message.downloadMedia();
           if (media && media.mimetype.startsWith("image/")) {
             await this.expenseService.processImageMessage(
-              media,
+              new WaMessageMedia(media.mimetype, media.data, (media as any).filename ?? undefined),
               message.body || "",
-              message,
+              this.toMinimalMessage(message),
               this.mongoService
             );
           } else {
@@ -454,7 +492,7 @@ export class WhatsAppClient {
           if (hasNumber && hasText) {
             await this.expenseService.processExpenseMessage(
               trimmedMessage,
-              message,
+              this.toMinimalMessage(message),
               this.mongoService
             );
           } else {
@@ -477,8 +515,7 @@ export class WhatsAppClient {
 
   private async handleBudgetUpdate(
     messageBody: string,
-    userId: string,
-    message: Message
+    userId: string
   ): Promise<void> {
     try {
       const budgetMatch = messageBody.match(/budget\s+(\d+(?:\.\d+)?)/i);
@@ -519,8 +556,7 @@ export class WhatsAppClient {
 
   private async handleCurrencyUpdate(
     messageBody: string,
-    userId: string,
-    message: Message
+    userId: string
   ): Promise<void> {
     try {
       const currencyMatch = messageBody.match(/currency\s+(\w+)/i);
@@ -555,7 +591,7 @@ export class WhatsAppClient {
 
   private async handleHelpCommand(
     userId: string,
-    message: Message
+    message: WaMessage
   ): Promise<void> {
     try {
       const helpMessage = `*Quick Commands:*\n\n📝 *Add:* Grocery 100\n✏️ *Edit:* #001 Edit 80\n🗑️ *Delete:* #001 Delete\n💰 *Budget:* Budget 30000\n💱 *Currency:* Currency BDT\n📊 *Report:* Report (Excel file)\n📷 *Scan:* Send a receipt photo (optional caption like Food)\n🙋 *Help:* Help`;
@@ -573,7 +609,7 @@ export class WhatsAppClient {
 
   private async handleReportGeneration(
     userId: string,
-    message: Message
+    message: WaMessage
   ): Promise<void> {
     try {
       const currentMonth = new Date().toLocaleString("default", {

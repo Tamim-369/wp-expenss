@@ -29,5 +29,11 @@
     "forceConsistentCasingInFileNames": true
   },
   "include": ["**/*.ts", "**/*.tsx"],
-  "exclude": ["node_modules", "dist", ".wwebjs_auth", ".wwebjs_cache"]
+  "exclude": [
+    "node_modules",
+    "dist",
+    ".wwebjs_auth",
+    ".wwebjs_cache",
+    "src/services/WhatsAppClient.ts"
+  ]
 }

@@ -1,4 +1,4 @@
-import { Client, Message, MessageMedia } from "whatsapp-web.js";
+import { Client, Message, MessageMedia } from "../types/wa";
 import Groq from "groq-sdk";
 import type {
   ExpenseData,

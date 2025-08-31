@@ -9,6 +9,13 @@
     "incremental": true,
     "tsBuildInfoFile": "./dist/.tsbuildinfo"
   },
+  "exclude": [
+    "node_modules",
+    "dist",
+    ".wwebjs_auth",
+    ".wwebjs_cache",
+    "src/services/WhatsAppClient.ts"
+  ],
   "ts-node": {
     "esm": true
   }

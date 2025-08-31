@@ -1,4 +1,4 @@
-import { Client, Message, MessageMedia } from "whatsapp-web.js";
+import { Client, Message, MessageMedia } from "../types/wa";
 import * as XLSX from "xlsx";
 import { Expense } from "../models/ExpenseModel";
 
@@ -43,10 +43,6 @@ export class ExcelService {
             userId,
             "❌ No expenses found for the requested period."
           );
-        } else {
-          await originalMessage.reply(
-            "❌ No expenses found for the requested period."
-          );
         }
         return;
       }
@@ -76,19 +72,12 @@ export class ExcelService {
       if (this.client) {
         await this.client.sendMessage(userId, media);
         // await this.client.sendMessage(userId, `✅ Sent expense data as *${fileName}*`);
-      } else {
-        await originalMessage.reply(media);
-        // await originalMessage.reply(`✅ Sent expense data as ${fileName}`);
       }
     } catch (error) {
       console.error("❌ Error sending Excel file:", error);
       if (this.client) {
         await this.client.sendMessage(
           userId,
-          "Sorry, there was an error generating the Excel file. Please try again."
-        );
-      } else {
-        await originalMessage.reply(
           "Sorry, there was an error generating the Excel file. Please try again."
         );
       }

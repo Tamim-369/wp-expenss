@@ -1,12 +1,11 @@
 import { config } from "dotenv";
-import { WhatsAppClient } from "./services/WhatsAppClient";
+import { startServer } from "./server";
 
 config();
 
 async function startApp() {
-  console.log("🚀 Starting WhatsApp Expense Tracker...");
-  const bot = new WhatsAppClient();
-  await bot.start();
+  console.log("🚀 Starting WhatsApp Cloud API server...");
+  await startServer();
 }
 
 startApp().catch((error) => {
