@@ -74,6 +74,8 @@ export class WhatsAppCloudAdapter implements Client {
     const form = new FormData();
     form.append("file", blob, media.filename || "file");
     form.append("type", media.mimetype);
+    // Required by WhatsApp Cloud API for media uploads
+    form.append("messaging_product", "whatsapp");
     const res = await fetch(url, {
       method: "POST",
       headers: { Authorization: `Bearer ${this.accessToken}` },
