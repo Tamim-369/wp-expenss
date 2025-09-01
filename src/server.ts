@@ -18,7 +18,7 @@ if (!process.env.GROQ_API_KEY || !process.env.MONGO_URI || !ACCESS_TOKEN || !PHO
 }
 
 async function connectToMongo() {
-  await mongoose.connect(process.env.MONGO_URI!, { dbName: 'expense_tracker' });
+  await mongoose.connect(process.env.MONGO_URI!);
   console.log('✅ Connected to MongoDB');
 }
 
@@ -139,6 +139,15 @@ async function routeMessage(message: Message) {
     // State machine from WhatsAppClient.handleMessage, simplified entry
     const userState = await mongoService.getUserState(userId);
 
+    // Handle OCR confirmation flow first
+    if (userState === 'awaiting_ocr_confirmation') {
+      const handled = await expenseService.handleOCRConfirmation(message.body || '', userId, message, mongoService);
+      if (!handled) {
+        await adapter.sendMessage(userId, 'Please reply with YES to save or NO to cancel.');
+      }
+      return;
+    }
+
     // Excel exports
     if (
       userState === 'active' &&
@@ -255,6 +264,16 @@ async function routeMessage(message: Message) {
       } else {
         await adapter.sendMessage(userId, '❌ Sorry, only images are supported for expense tracking. Please send an image of a receipt.');
       }
+      return;
+    }
+
+    // Edit/Delete commands
+    if (userState === 'active' && /^#\d+\s+delete/i.test(message.body || '')) {
+      await expenseService.handleExpenseDelete(message.body || '', userId, message, mongoService);
+      return;
+    }
+    if (userState === 'active' && /^#\d+\s+/.test(message.body || '')) {
+      await expenseService.handleExpenseEdit(message.body || '', userId, message, mongoService);
       return;
     }
 

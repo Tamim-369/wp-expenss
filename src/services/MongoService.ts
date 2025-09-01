@@ -95,9 +95,11 @@ export class MongoService {
     return messages.map((m) => m.message).reverse(); // oldest to newest
   }
 
-  public async getNextExpenseNumber(): Promise<number> {
+  public async getNextExpenseNumber(userId: string): Promise<number> {
+    // Use a per-user counter so each user starts from #001
+    const key = `expense_number:${userId}`;
     const counter = await Counter.findOneAndUpdate(
-      { key: "expense_number" },
+      { key },
       { $inc: { seq: 1 } },
       { upsert: true, new: true }
     );

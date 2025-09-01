@@ -585,7 +585,7 @@ Examples:
     mongoService: MongoService
   ): Promise<{ id: string; number: number }> {
     try {
-      const seq = await mongoService.getNextExpenseNumber();
+      const seq = await mongoService.getNextExpenseNumber(userId);
       const saved = await Expense.create({
         ...expenseData,
         userId,
