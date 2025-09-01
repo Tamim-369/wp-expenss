@@ -308,8 +308,8 @@ export class WhatsAppClient {
         return;
       }
 
-      // Handle report generation
-      if (userState === "active" && messageText === "report") {
+      // Handle report generation (supports 'report' and 'report <month> [year]')
+      if (userState === "active" && messageText.startsWith("report")) {
         await this.handleReportGeneration(userId, this.toMinimalMessage(message));
         return;
       }
@@ -607,7 +607,7 @@ export class WhatsAppClient {
     message: WaMessage
   ): Promise<void> {
     try {
-      const helpMessage = `*Quick Commands:*\n\n📝 *Add:* Grocery 100\n✏️ *Edit:* #001 Edit 80\n🗑️ *Delete:* #001 Delete\n💰 *Budget:* Budget 30000\n💱 *Currency:* Currency BDT\n📊 *Report:* Report (Excel file)\n📷 *Scan:* Send a receipt photo (optional caption like Food)\n🙋 *Help:* Help`;
+      const helpMessage = `*Quick Commands:*\n\n📝 *Add:* Grocery 100\n✏️ *Edit:* #001 Edit 80\n🗑️ *Delete:* #001 Delete\n💰 *Budget:* Budget 30000\n💱 *Currency:* Currency BDT\n📊 *Report:* Report (current month) or Report January [2025]\n📷 *Scan:* Send a receipt photo (optional caption like Food)\n🙋 *Help:* Help`;
 
       console.log(`📤 Sending help message to: ${userId}`);
       await this.client.sendMessage(userId, helpMessage);
@@ -625,15 +625,34 @@ export class WhatsAppClient {
     message: WaMessage
   ): Promise<void> {
     try {
-      const currentMonth = new Date().toLocaleString("default", {
-        month: "long",
-      });
-      const currentYear = new Date().getFullYear();
+      const raw = (message.body || "").toLowerCase();
+      const monthNames = [
+        "january","february","march","april","may","june",
+        "july","august","september","october","november","december"
+      ];
+      const now = new Date();
+      let targetMonthIndex: number | null = null;
+      for (let i = 0; i < monthNames.length; i++) {
+        const full = monthNames[i];
+        const short = full.slice(0,3);
+        if (raw.includes(full) || raw.match(new RegExp(`\\b${short}\\b`))) {
+          targetMonthIndex = i; break;
+        }
+      }
+      const yearMatch = raw.match(/\b(20\d{2}|19\d{2})\b/);
+      let targetYear: number = yearMatch ? parseInt(yearMatch[1]!, 10) : now.getFullYear();
+      const currentMonthName = now.toLocaleString("default", { month: "long" });
+      const currentYear = now.getFullYear();
+
+      const monthLabel = targetMonthIndex !== null
+        ? monthNames[targetMonthIndex][0].toUpperCase() + monthNames[targetMonthIndex].slice(1)
+        : currentMonthName;
+      const yearLabel = targetMonthIndex !== null ? targetYear : currentYear;
 
       console.log(`📤 Sending report generation message to: ${userId}`);
       await this.client.sendMessage(
         userId,
-        `Generating your report for ${currentMonth} ${currentYear} 📊...`
+        `📊 Generating your report for ${monthLabel} ${yearLabel} ⏳✨`
       );
 
       // Generate and send the Excel report
@@ -641,7 +660,7 @@ export class WhatsAppClient {
 
       await this.client.sendMessage(
         userId,
-        "Here's your monthly expense report in Excel."
+        "Here is your expense report (Excel) ✅"
       );
     } catch (error) {
       console.error("❌ Error generating report:", error);

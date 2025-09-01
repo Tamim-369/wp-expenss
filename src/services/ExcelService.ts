@@ -19,6 +19,24 @@ export class ExcelService {
 
       const currentYear = new Date().getFullYear().toString();
       const currentMonth = new Date().toISOString().slice(0, 7);
+      const monthNames = [
+        "january","february","march","april","may","june",
+        "july","august","september","october","november","december"
+      ];
+      const pad2 = (n: number) => String(n).padStart(2, '0');
+      // detect explicit month mention like: report january [2025]
+      let detectedMonthIndex = -1;
+      for (let i = 0; i < monthNames.length; i++) {
+        const month = monthNames[i]!;
+        if (messageText.includes(month)) { detectedMonthIndex = i; break; }
+        // also support short forms like jan, feb, mar, apr, aug, sep, oct, nov, dec
+        const short = month.slice(0,3);
+        if (messageText.includes(` ${short} `) || messageText.endsWith(` ${short}`) || messageText.startsWith(`${short} `)) {
+          detectedMonthIndex = i; break;
+        }
+      }
+      const yearMatch = messageText.match(/\b(20\d{2}|19\d{2})\b/);
+      const detectedYear = yearMatch ? yearMatch[1] : null;
 
       if (messageText.includes("this month")) {
         expenses = await Expense.find({
@@ -32,6 +50,16 @@ export class ExcelService {
           date: { $regex: `^${currentYear}` },
         });
         fileName = `expenses_${currentYear}.xlsx`;
+      } else if (messageText.includes('report') && detectedMonthIndex >= 0) {
+        const y = detectedYear || currentYear;
+        const m = pad2(detectedMonthIndex + 1);
+        const ym = `${y}-${m}`;
+        expenses = await Expense.find({ userId, date: { $regex: `^${ym}` } });
+        fileName = `expenses_${ym}.xlsx`;
+      } else if (messageText.includes('report')) {
+        // default report to current month
+        expenses = await Expense.find({ userId, date: { $regex: `^${currentMonth}` } });
+        fileName = `expenses_${currentMonth}.xlsx`;
       } else {
         expenses = await Expense.find({ userId });
         fileName = "expenses_all.xlsx";
