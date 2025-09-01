@@ -83,6 +83,7 @@ app.get('/webhook', (c: Context) => {
 app.post('/webhook', async (c: Context) => {
   const payload = await c.req.json();
   try {
+    console.log('➡️  Webhook POST received');
     const entries = payload.entry || [];
     for (const entry of entries) {
       const changes = entry.changes || [];
@@ -106,6 +107,10 @@ app.post('/webhook', async (c: Context) => {
           }
 
           // Only handle user messages (ignore statuses)
+          if (msg.type && from) {
+            const body = msg.text?.body || msg.image?.caption || '';
+            console.log(`📩 Incoming message [${msg.type}] from ${from}: ${body?.slice(0, 120)}`);
+          }
           if (msg.type === 'text' && msg.text?.body) {
             const shim = makeMessageShim({ from, text: msg.text.body });
             await routeMessage(shim);
@@ -161,7 +166,7 @@ async function routeMessage(message: Message) {
         text.includes('monthly spend data') ||
         text.includes('full expense data') ||
         text.includes('all expense') ||
-        text === 'report' ||
+        text.includes('report') ||
         text.includes('this month') ||
         text.includes('this year'))
     ) {
@@ -277,6 +282,21 @@ async function routeMessage(message: Message) {
       return;
     }
 
+    // Guard: user typed edit/delete without an index -> send universal error
+    if (userState === 'active') {
+      const raw = (message.body || '').trim().toLowerCase();
+      const mentionsEdit = raw.startsWith('edit') || raw.includes(' edit ');
+      const mentionsDelete = raw.startsWith('delete') || raw.includes(' delete ');
+      const hasIndexPattern = /^#\d+\s+/.test(raw);
+      if ((mentionsEdit || mentionsDelete) && !hasIndexPattern) {
+        await adapter.sendMessage(
+          userId,
+          '❌ Invalid command. Use index number.\nExamples:\n#001 Edit 400\n#001 Coffee 400\n#001 Delete'
+        );
+        return;
+      }
+    }
+
     // Text expense
     if (userState === 'active' && (message.body || '').trim()) {
       const trimmed = (message.body || '').trim();
@@ -299,5 +319,5 @@ export async function startServer() {
   await connectToMongo();
   const port = Number(process.env.PORT || 3000);
   console.log(`🚀 Starting Hono server on port ${port}`);
-  Bun.serve({ fetch: app.fetch, port });
+  Bun.serve({ fetch: app.fetch, port, hostname: '0.0.0.0' });
 }

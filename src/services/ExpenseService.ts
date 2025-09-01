@@ -99,6 +99,10 @@ export class ExpenseService {
 
       let finalExpense: ExpenseData | null = null;
       let isFromCaption = false;
+      // Heuristic: treat short, numberless captions as a user-provided item name hint
+      const captionNameHint = caption && caption.trim() && !/\d/.test(caption)
+        ? caption.trim().substring(0, 50)
+        : '';
 
       // Case A: Image + Caption - prioritize caption
       if (caption.trim()) {
@@ -116,9 +120,17 @@ export class ExpenseService {
         if (ocrResult.confidence >= 0.85) {
           // Case B: High confidence - direct save
           finalExpense = ocrResult.expense;
+          // If user caption looked like a name (no numbers), override item with it
+          if (finalExpense && captionNameHint) {
+            finalExpense.item = captionNameHint;
+          }
           console.log("✅ High confidence OCR result:", finalExpense);
         } else if (ocrResult.confidence >= 0.5) {
           // Case C: Medium confidence - ask for confirmation
+          // If we have a name hint from caption, carry it into the confirmation step
+          if (ocrResult.expense && captionNameHint) {
+            ocrResult.expense.item = captionNameHint;
+          }
           await this.handleUncertainOCR(ocrResult.expense!, originalMessage, mongoService, userCurrency);
           return;
         } else {

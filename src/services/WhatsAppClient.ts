@@ -489,6 +489,19 @@ export class WhatsAppClient {
           const hasNumber = /\d/.test(trimmedMessage);
           const hasText = /[a-zA-Z]/.test(trimmedMessage);
 
+          // Guard: if user intends edit/delete but missing required index (#001 ...), send universal error
+          const lower = trimmedMessage.toLowerCase();
+          const mentionsEdit = lower.startsWith('edit') || lower.includes(' edit ');
+          const mentionsDelete = lower.startsWith('delete') || lower.includes(' delete ');
+          const hasIndexPattern = /^#\d+\s+/.test(lower);
+          if ((mentionsEdit || mentionsDelete) && !hasIndexPattern) {
+            await this.client.sendMessage(
+              userId,
+              "❌ Invalid command. Use index number.\nExamples:\n#001 Edit 400\n#001 Coffee 400\n#001 Delete"
+            );
+            return;
+          }
+
           if (hasNumber && hasText) {
             await this.expenseService.processExpenseMessage(
               trimmedMessage,
