@@ -170,6 +170,34 @@ async function routeMessage(message: Message) {
         text.includes('this month') ||
         text.includes('this year'))
     ) {
+      // If user asked for a report, send a pre-message indicating detected period
+      if (text.includes('report')) {
+        const raw = text;
+        const monthNames = [
+          'january','february','march','april','may','june',
+          'july','august','september','october','november','december'
+        ];
+        const now = new Date();
+        let targetMonthIndex: number | null = null;
+        for (const [i, full] of monthNames.entries()) {
+          const short = full.slice(0, 3);
+          if (raw.includes(full) || new RegExp(`\\b${short}\\b`).test(raw)) {
+            targetMonthIndex = i; break;
+          }
+        }
+        const yearMatch = raw.match(/\b(20\d{2}|19\d{2})\b/);
+        const currentMonthName = now.toLocaleString('default', { month: 'long' });
+        const currentYear = now.getFullYear();
+        let selectedMonth: string = currentMonthName;
+        if (targetMonthIndex !== null && targetMonthIndex >= 0 && targetMonthIndex < monthNames.length) {
+          selectedMonth = monthNames[targetMonthIndex]!;
+        }
+        const monthLabel = selectedMonth.charAt(0).toUpperCase() + selectedMonth.slice(1);
+        const yearLabel = targetMonthIndex !== null && yearMatch?.[1]
+          ? parseInt(yearMatch[1]!, 10)
+          : currentYear;
+        await adapter.sendMessage(userId, `📊 Generating your report for ${monthLabel} ${yearLabel} ⏳✨`);
+      }
       await excelService.sendExcelFile(userId, message);
       return;
     }
@@ -206,7 +234,7 @@ async function routeMessage(message: Message) {
     }
 
     if (userState === 'active' && text === 'help') {
-      const helpMessage = `*Quick Commands:*\n\n📝 *Add:* Grocery 100\n✏️ *Edit:* #001 Edit 80\n🗑️ *Delete:* #001 Delete\n💰 *Budget:* Budget 30000\n💱 *Currency:* Currency BDT\n📊 *Report:* Report (Excel file)\n📷 *Scan:* Send a receipt photo (optional caption like Food)\n🙋 *Help:* Help`;
+      const helpMessage = `*Quick Commands:*\n\n📝 *Add:* Grocery 100\n✏️ *Edit:* #001 Edit 80\n🗑️ *Delete:* #001 Delete\n💰 *Budget:* Budget 30000\n💱 *Currency:* Currency BDT\n📊 *Report:* Report (current month) or Report January [2025]\n📷 *Scan:* Send a receipt photo (optional caption like Food)\n🙋 *Help:* Help`;
       await adapter.sendMessage(userId, helpMessage);
       return;
     }
