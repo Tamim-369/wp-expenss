@@ -107,12 +107,12 @@ export class MongoService {
   }
 
   // User state management methods
-  public async getUserState(userId: string): Promise<'new' | 'awaiting_budget' | 'awaiting_currency' | 'active' | 'awaiting_ocr_confirmation' | 'awaiting_currency_change'> {
+  public async getUserState(userId: string): Promise<'new' | 'awaiting_budget' | 'awaiting_currency' | 'active' | 'awaiting_ocr_confirmation' | 'awaiting_currency_change' | 'awaiting_image_expense'> {
     const user = await User.findOne({ userId });
     return user?.state || 'new';
   }
 
-  public async setUserState(userId: string, state: 'new' | 'awaiting_budget' | 'awaiting_currency' | 'active' | 'awaiting_ocr_confirmation' | 'awaiting_currency_change'): Promise<void> {
+  public async setUserState(userId: string, state: 'new' | 'awaiting_budget' | 'awaiting_currency' | 'active' | 'awaiting_ocr_confirmation' | 'awaiting_currency_change' | 'awaiting_image_expense'): Promise<void> {
     await User.findOneAndUpdate(
       { userId },
       { state },
@@ -177,6 +177,18 @@ export class MongoService {
   public async isAwaitingOCRConfirmation(userId: string): Promise<boolean> {
     const user = await User.findOne({ userId });
     return user?.state === 'awaiting_ocr_confirmation';
+  }
+
+  // Pending image + caption (no number) draft helper
+  public async storePendingImageExpenseDraft(userId: string, draft: any): Promise<void> {
+    await User.findOneAndUpdate(
+      { userId },
+      {
+        pendingExpense: draft,
+        state: 'awaiting_image_expense'
+      },
+      { upsert: true, new: true }
+    );
   }
 
   // Pending currency change flow

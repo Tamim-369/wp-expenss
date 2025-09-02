@@ -175,6 +175,17 @@ async function routeMessage(message: Message) {
       return;
     }
 
+    // Handle pending image expense flow: user needs to reply with amount or full text
+    if (userState === 'awaiting_image_expense') {
+      const trimmed = (message.body || '').trim();
+      if (trimmed) {
+        await expenseService.finalizePendingImageExpense(trimmed, message, mongoService);
+      } else {
+        await adapter.sendMessage(userId, 'Reply with the amount (number only), e.g., 120. Or send full like: Item 120');
+      }
+      return;
+    }
+
     // Excel exports
     if (
       userState === 'active' &&

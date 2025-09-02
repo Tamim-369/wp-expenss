@@ -28,6 +28,76 @@ export class ExpenseService {
     }
   }
 
+  // Finalize a pending image expense after user replies with amount or full text
+  public async finalizePendingImageExpense(
+    userText: string,
+    originalMessage: Message,
+    mongoService: MongoService
+  ): Promise<void> {
+    const userId = originalMessage.from;
+    const pending = await mongoService.getPendingExpense(userId);
+    if (!pending) {
+      await this.client.sendMessage(userId, 'No pending image expense found. Please send a receipt photo again.');
+      return;
+    }
+
+    const trimmed = (userText || '').trim();
+    let data = await this.extractExpenseData(trimmed);
+
+    if (!data) {
+      // Maybe user sent only a number -> combine with pending item
+      const onlyNumber = trimmed.match(/^(\d+(?:[\.,]\d+)?)$/);
+      if (onlyNumber) {
+        const price = parseFloat(onlyNumber[1]!.replace(',', '.'));
+        const date = new Date().toISOString().slice(0, 10);
+        const userCurrency = await mongoService.getUserCurrency(userId);
+        data = { item: pending.item || 'Item', price, currency: userCurrency, date };
+      }
+    }
+
+    if (!data) {
+      await this.client.sendMessage(userId, 'Please send a valid amount (number only), e.g., 120');
+      return;
+    }
+
+    // Use user's currency and attach image metadata from pending
+    const userCurrency = await mongoService.getUserCurrency(userId);
+    data.currency = userCurrency;
+    data.price = Math.round(data.price * 100) / 100;
+    if (pending.imageUrl) data.imageUrl = pending.imageUrl;
+    if (pending.imageProvider) data.imageProvider = pending.imageProvider;
+    if (pending.imageRef) data.imageRef = pending.imageRef;
+
+    const created = await this.addToMongo(data, userId, mongoService);
+    const monthlyTotal = await mongoService.calculateMonthlyTotal(userId, data.date);
+    const budget = await mongoService.getMonthlyBudget(userId);
+    const remaining = budget - monthlyTotal.totalAmount;
+    const todaySpending = await CurrencyService.getTodaysSpending(userId);
+    const dailyLimit = budget > 0 ? CurrencyService.calculateDynamicDailyLimit(remaining) : null;
+
+    // Build reply (treat as image expense)
+    const replyMessage = this.buildImageExpenseReply(
+      created.number,
+      data.item,
+      data.currency,
+      data.price,
+      data.date,
+      monthlyTotal.month,
+      monthlyTotal.year,
+      monthlyTotal.currency,
+      monthlyTotal.totalAmount,
+      monthlyTotal.expenseCount,
+      budget,
+      remaining,
+      dailyLimit,
+      todaySpending,
+      false
+    );
+
+    await this.client.sendMessage(userId, replyMessage);
+    await mongoService.clearPendingExpense(userId);
+  }
+
   // Parse a free-form text like "Coffee 120 bdt" into an ExpenseData.
   // Heuristic: the last number in the text is the price; the leading words form the item name.
   // Currency is detected via CurrencyService or defaults to 'USD'. Date defaults to today (YYYY-MM-DD).
@@ -255,9 +325,30 @@ Please send a clearer photo, add a caption like _Food_, or type manually like: C
           await this.handleUncertainOCR(ocrResult.expense!, originalMessage, mongoService, userCurrency);
           return;
         } else {
-          // Case D: Low confidence - ask for manual entry
-          await this.handleFailedOCR(originalMessage);
-          return;
+          // Case D: Low confidence
+          if (captionNameHint) {
+            // Fallback: store a pending draft with the image and item hint; ask user for the amount
+            const today = new Date().toISOString().slice(0, 10);
+            const draft: ExpenseData = {
+              item: captionNameHint,
+              price: 0,
+              currency: userCurrency,
+              date: today,
+            };
+            if (uploadedImageUrl) draft.imageUrl = uploadedImageUrl;
+            if (uploadedProvider) draft.imageProvider = uploadedProvider;
+            if (uploadedImageRef) draft.imageRef = uploadedImageRef;
+            await mongoService.storePendingImageExpenseDraft(originalMessage.from, draft);
+            await this.client.sendMessage(
+              originalMessage.from,
+              `Couldn't read the amount from the photo.\nReply with the amount for *${captionNameHint}* (number only), e.g., 120\nOr send full: ${captionNameHint} 120`
+            );
+            return;
+          } else {
+            // Ask for a clearer photo or manual entry
+            await this.handleFailedOCR(originalMessage);
+            return;
+          }
         }
       }
 
