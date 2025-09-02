@@ -85,7 +85,7 @@ export class ExcelService {
         Item: exp.item,
         Price: (Math.round(exp.price * 100) / 100).toFixed(2),
         Currency: exp.currency,
-        Image: "View Image", // placeholder text; hyperlink applied below if available
+        Image: "", // leave blank by default; add hyperlink only if image exists
       }));
 
       // Create sheet with a fixed header order
@@ -103,7 +103,7 @@ export class ExcelService {
           const rowIndex = r + 2; // +1 for 1-based rows, +1 for header
           const colIndex = imageColIndex + 1; // 1-based columns
           const cellAddress = XLSX.utils.encode_cell({ r: rowIndex - 1, c: colIndex - 1 });
-          const cell = worksheet[cellAddress] || { t: 's', v: 'View Image' };
+          const cell = worksheet[cellAddress] || { t: 's', v: '' };
           const shortLink = baseUrl ? `${baseUrl}/v/${String(exp._id)}` : String(exp.imageUrl);
           (cell as any).l = { Target: shortLink, Tooltip: 'Open image' };
           cell.t = 's';

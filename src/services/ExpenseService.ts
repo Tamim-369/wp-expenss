@@ -28,6 +28,86 @@ export class ExpenseService {
     }
   }
 
+  // Parse a free-form text like "Coffee 120 bdt" into an ExpenseData.
+  // Heuristic: the last number in the text is the price; the leading words form the item name.
+  // Currency is detected via CurrencyService or defaults to 'USD'. Date defaults to today (YYYY-MM-DD).
+  private async extractExpenseData(text: string): Promise<ExpenseData | null> {
+    const normalized = (text || '').trim();
+    if (!normalized) return null;
+
+    const numMatch = normalized.match(/(\d+(?:[\.,]\d+)?)(?!.*\d)/); // last number
+    if (!numMatch) return null;
+
+    const rawPrice = numMatch[1]!.replace(',', '.');
+    const price = parseFloat(rawPrice);
+    if (isNaN(price)) return null;
+
+    const before = normalized.slice(0, numMatch.index).trim();
+    const after = normalized.slice((numMatch.index || 0) + numMatch[0]!.length).trim();
+    let item = before || after || 'Item';
+    // collapse extra spaces
+    item = item.replace(/\s{2,}/g, ' ').trim();
+
+    // Detect currency tokens within the whole text
+    const detected = CurrencyService.detectCurrency(normalized);
+    const currency: string = detected ?? 'USD';
+
+    const date = new Date().toISOString().slice(0, 10);
+
+    return { item, price, currency, date };
+  }
+
+  // Persist expense to Mongo and return the created expense document
+  private async addToMongo(expense: ExpenseData, userId: string, mongoService: MongoService) {
+    const number = await mongoService.getNextExpenseNumber(userId);
+    const created = await Expense.create({
+      userId,
+      item: expense.item,
+      price: expense.price,
+      currency: expense.currency,
+      date: expense.date,
+      number,
+      imageUrl: expense.imageUrl,
+      imageProvider: expense.imageProvider,
+      imageRef: expense.imageRef,
+    });
+    return created;
+  }
+
+  // Extract expense from image. Placeholder implementation returning low confidence.
+  // In future, integrate OCR and LLM extraction.
+  private async extractExpenseWithConfidence(imageDataUrl: string, caption: string): Promise<{ confidence: number; expense: ExpenseData | null; }> {
+    // If caption looks parseable, try that with a medium confidence
+    const parsedFromCaption = await this.extractExpenseData(caption || '');
+    if (parsedFromCaption) {
+      return { confidence: 0.6, expense: parsedFromCaption };
+    }
+    return { confidence: 0.0, expense: null };
+  }
+
+  // Ask user to confirm OCR-parsed expense. Stores pending expense and sets state to awaiting_ocr_confirmation.
+  private async handleUncertainOCR(expense: ExpenseData, originalMessage: Message, mongoService: MongoService, userCurrency: string): Promise<void> {
+    // Normalize currency to the user's current currency for confirmation preview
+    const pending = { ...expense, currency: userCurrency };
+    await mongoService.storePendingExpense(originalMessage.from, pending);
+
+    const preview = `*${pending.item}* — ${this.money(pending.price)} ${pending.currency}`;
+    const dateStr = pending.date;
+    const msg = `🧐 I found this from your photo:
+${preview}
+_${dateStr}_
+
+Save it? Reply with YES or NO.`;
+    await this.client.sendMessage(originalMessage.from, msg);
+  }
+
+  // Ask user to resend clearer photo or enter manually
+  private async handleFailedOCR(originalMessage: Message): Promise<void> {
+    const msg = `❌ Couldn't read the receipt.
+Please send a clearer photo, add a caption like _Food_, or type manually like: Coffee 120`;
+    await this.client.sendMessage(originalMessage.from, msg);
+  }
+
   public async processExpenseMessage(
     messageText: string,
     originalMessage: Message,
@@ -360,21 +440,22 @@ export class ExpenseService {
     dailyLimit: number | null,
     todaySpending: number | null
   ): string {
-    let reply = `#${this.padNumber(number)} ${item}: ${this.money(price)} ${currency} ✅\n`;
-    reply += `${month} ${year} → Spent: ${this.money(totalAmount)} / ${this.money(budget)} ${currency}\n`;
-    reply += `Remaining: ${this.money(remaining)} ${currency}\n`;
+    let reply = `*#${this.padNumber(number)}* • *${item}* — ${this.money(price)} ${currency} ✅\n`;
+    reply += `_${date}_\n`;
+    reply += `• Spent (${month} ${year}): *${this.money(totalAmount)}* / *${this.money(budget)}* ${currency}\n`;
+    reply += `• Remaining: *${this.money(remaining)}* ${currency}\n`;
     if (budget > 0 && dailyLimit !== null && todaySpending !== null) {
-      reply += `🎯 Daily limit: ${this.money(dailyLimit)} ${currency}\n`;
+      reply += `🎯 *Daily limit*: ${this.money(dailyLimit)} ${currency}\n`;
       if (todaySpending <= dailyLimit) {
-        reply += `✅ You're on track. Good job!`;
+        reply += `✅ *You're on track*. Keep it up!`;
       } else {
-        reply += `⚠️ You're above your daily limit. Try to save tomorrow.`;
+        reply += `⚠️ *Above daily limit*. Try to save tomorrow.`;
       }
     }
 
     // Add tip for first expense
     if (number === 1) {
-      reply += `\n\nTip 💡 You can also scan expenses from images. Just send a photo of a receipt, bill, or ticket. Optional: add a caption like "Food" to label it.`;
+      reply += `\n\n💡 _Tip_: You can also scan expenses from images. Send a receipt photo. Optional: add a caption like _Food_.`;
     }
 
     return reply;
@@ -396,376 +477,20 @@ export class ExpenseService {
     dailyLimit: number | null,
     todaySpending: number | null
   ): string {
-    let reply = `#${this.padNumber(number)} ${item}: ${this.money(price)} ${currency} ✅ (Updated)\n`;
-    reply += `${month} ${year} → Spent: ${this.money(totalAmount)} / ${this.money(budget)} ${currency}\n`;
-    reply += `Remaining: ${this.money(remaining)} ${currency}\n`;
+    let reply = `*#${this.padNumber(number)}* • *${item}* — ${this.money(price)} ${currency} ✅ _(Updated)_\n`;
+    reply += `_${date}_\n`;
+    reply += `• Spent (${month} ${year}): *${this.money(totalAmount)}* / *${this.money(budget)}* ${currency}\n`;
+    reply += `• Remaining: *${this.money(remaining)}* ${currency}\n`;
     if (budget > 0 && dailyLimit !== null && todaySpending !== null) {
-      reply += `🎯 Daily limit: ${this.money(dailyLimit)} ${currency}\n`;
+      reply += `🎯 *Daily limit*: ${this.money(dailyLimit)} ${currency}\n`;
       if (todaySpending <= dailyLimit) {
-        reply += `✅ You're on track. Good job!`;
+        reply += `✅ *You're on track*. Keep it up!`;
       } else {
-        reply += `⚠️ You're above your daily limit. Try to save tomorrow.`;
+        reply += `⚠️ *Above daily limit*. Try to save tomorrow.`;
       }
     }
 
     return reply;
-  }
-
-  private async extractTextFromImage(imageUrl: string): Promise<string> {
-    try {
-      const completion = await this.groq.chat.completions.create({
-        messages: [
-          {
-            role: "system",
-            content:
-              "You are an accurate OCR tool. Transcribe all text visible in the image exactly as it appears, including prices and totals. Preserve formatting where possible.",
-          },
-          {
-            role: "user",
-            content: [
-              {
-                type: "text",
-                text: "Extract and transcribe all text from this image:",
-              },
-              {
-                type: "image_url",
-                image_url: {
-                  url: imageUrl,
-                },
-              },
-            ],
-          },
-        ],
-        model: "meta-llama/llama-4-maverick-17b-128e-instruct",
-        temperature: 0.1,
-        max_tokens: 500,
-      });
-
-      return completion.choices[0]?.message?.content || "";
-    } catch (error) {
-      console.error("❌ Error extracting text from image:", error);
-      return "";
-    }
-  }
-
-  private async verifyExtractedText(
-    imageUrl: string,
-    extractedText: string
-  ): Promise<boolean> {
-    try {
-      const prompt = `Verify if the provided extracted text accurately matches the text in the image. Be strict: check for completeness, accuracy, and no hallucinations.
-Extracted text: "${extractedText.replace(/"/g, '\\"')}"
-
-Return ONLY valid JSON: {"is_good": true} or {"is_good": false}`;
-
-      const completion = await this.groq.chat.completions.create({
-        messages: [
-          {
-            role: "system",
-            content:
-              "You are a verification tool. Return only valid JSON, no explanations.",
-          },
-          {
-            role: "user",
-            content: [
-              {
-                type: "text",
-                text: prompt,
-              },
-              {
-                type: "image_url",
-                image_url: {
-                  url: imageUrl,
-                },
-              },
-            ],
-          },
-        ],
-        model: "meta-llama/llama-4-maverick-17b-128e-instruct",
-        temperature: 0,
-        max_tokens: 100,
-      });
-
-      const response = completion.choices[0]?.message?.content?.trim();
-      if (!response) {
-        console.error("❌ No response from Groq for text verification");
-        return false;
-      }
-
-      const cleanedResponse = response
-        .replace(/```json\n?/g, "")
-        .replace(/```\n?/g, "")
-        .trim();
-      const parsed = JSON.parse(cleanedResponse);
-      return parsed.is_good === true;
-    } catch (error) {
-      console.error("❌ Error verifying extracted text:", error);
-      return false;
-    }
-  }
-
-  private async directExtractExpenseFromImage(
-    imageUrl: string,
-    caption: string
-  ): Promise<ExpenseData | null> {
-    try {
-      const prompt = `You are an expense extractor from receipt images. Analyze the image to extract expense info.
-IMPORTANT:
-- If a total price, subtotal, or full amount is present, use THAT as the price, ignore individual items.
-- Item: A summary description like "Groceries", "Dinner", or based on receipt content.
-- Use caption for context if provided: "${caption.replace(/"/g, '\\"')}"
-- Detect currency, default USD.
-
-Return ONLY valid JSON, no explanations: {"item": "name", "price": number, "currency": "USD"}
-If invalid or unclear: {"error": "invalid"}`;
-
-      const completion = await this.groq.chat.completions.create({
-        messages: [
-          {
-            role: "system",
-            content:
-              "Return only valid JSON objects, never code blocks or explanations.",
-          },
-          {
-            role: "user",
-            content: [
-              {
-                type: "text",
-                text: prompt,
-              },
-              {
-                type: "image_url",
-                image_url: {
-                  url: imageUrl,
-                },
-              },
-            ],
-          },
-        ],
-        model: "meta-llama/llama-4-maverick-17b-128e-instruct",
-        temperature: 0.1,
-        max_tokens: 200,
-      });
-
-      const response = completion.choices[0]?.message?.content?.trim();
-      if (!response) {
-        console.error("❌ No response from Groq for direct expense extraction");
-        return null;
-      }
-
-      console.log("🤖 Groq direct extract response:", response);
-      const cleanedResponse = response
-        .replace(/```json\n?/g, "")
-        .replace(/```\n?/g, "")
-        .trim();
-      const parsed = JSON.parse(cleanedResponse) as GroqExpenseResponse;
-
-      if (parsed.error || !parsed.item || !parsed.price) {
-        return null;
-      }
-
-      return {
-        item: parsed.item,
-        price: parsed.price,
-        currency: parsed.currency || "USD",
-        date: new Date().toISOString().split("T")[0] || "",
-      };
-    } catch (error) {
-      console.error("❌ Error direct extracting expense from image:", error);
-      return null;
-    }
-  }
-
-  public async extractExpenseData(text: string): Promise<ExpenseData | null> {
-    try {
-      const prompt = `You are a JSON parser. Extract expense information from: "${text}"
-
-IMPORTANT: Return ONLY valid JSON, no code blocks, no explanations, no markdown.
-- Item names can be multiple words (e.g., "Gari Bhara", "Ice Cream", "Bus Fare")
-- The price is usually the last number in the text
-- If text mentions total or full amount, prioritize that.
-
-Format: {"item": "name", "price": number, "currency": "USD"}
-If invalid: {"error": "invalid"}
-
-Examples:
-"Coffee 10 dollar" -> {"item": "Coffee", "price": 10.00, "currency": "USD"}
-"Gari Bhara 500" -> {"item": "Gari Bhara", "price": 500.00, "currency": "USD"}
-"Ice cream cone 25 taka" -> {"item": "Ice cream cone", "price": 25.00, "currency": "BDT"}
-"Bus fare to dhaka 150" -> {"item": "Bus fare to dhaka", "price": 150.00, "currency": "USD"}`;
-
-      const completion = await this.groq.chat.completions.create({
-        messages: [
-          {
-            role: "system",
-            content:
-              "You are a JSON parser. Return only valid JSON objects, never code blocks or explanations. Item names can be multiple words.",
-          },
-          { role: "user", content: prompt },
-        ],
-        model: "llama-3.1-8b-instant",
-        temperature: 0,
-        max_tokens: 150,
-      });
-
-      const response = completion.choices[0]?.message?.content?.trim();
-      if (!response) {
-        console.error("❌ No response from Groq for expense extraction");
-        return null;
-      }
-
-      console.log("🤖 Groq response:", response);
-      const cleanedResponse = response
-        .replace(/```json\n?/g, "")
-        .replace(/```\n?/g, "")
-        .trim();
-      const parsed = JSON.parse(cleanedResponse) as GroqExpenseResponse;
-
-      if (parsed.error || !parsed.item || !parsed.price) {
-        return null;
-      }
-
-      return {
-        item: parsed.item,
-        price: parsed.price,
-        currency: parsed.currency || "USD",
-        date: new Date().toISOString().split("T")[0] || "",
-      };
-    } catch (error) {
-      console.error("❌ Error extracting expense data:", error);
-      return null;
-    }
-  }
-
-  public async addToMongo(
-    expenseData: ExpenseData,
-    userId: string,
-    mongoService: MongoService
-  ): Promise<{ id: string; number: number }> {
-    try {
-      const seq = await mongoService.getNextExpenseNumber(userId);
-      const saved = await Expense.create({
-        ...expenseData,
-        userId,
-        number: seq,
-      });
-      console.log("✅ Added to MongoDB:", { ...expenseData, number: seq });
-      return { id: String(saved._id), number: seq };
-    } catch (error) {
-      console.error("❌ Error adding to MongoDB:", error);
-      throw error;
-    }
-  }
-
-  // New methods for image processing with confidence levels
-  private async extractExpenseWithConfidence(
-    imageUrl: string,
-    caption: string
-  ): Promise<{ expense: ExpenseData | null; confidence: number }> {
-    try {
-      const prompt = `You are an expense extractor from receipt images. Analyze the image to extract expense info and provide confidence.
-
-IMPORTANT:
-- If a total price, subtotal, or full amount is present, use THAT as the price
-- Item: A summary description like "Groceries", "Dinner", or based on receipt content
-- Use caption for context if provided: "${caption.replace(/"/g, '\\"')}"
-- Provide confidence score (0.0 to 1.0) based on image clarity and text readability
-
-Return ONLY valid JSON:
-{"item": "name", "price": number, "currency": "USD", "confidence": 0.95}
-If invalid or unclear: {"error": "invalid", "confidence": 0.0}`;
-
-      const completion = await this.groq.chat.completions.create({
-        messages: [
-          {
-            role: "system",
-            content: "Return only valid JSON objects with confidence scores, never code blocks or explanations.",
-          },
-          {
-            role: "user",
-            content: [
-              {
-                type: "text",
-                text: prompt,
-              },
-              {
-                type: "image_url",
-                image_url: {
-                  url: imageUrl,
-                },
-              },
-            ],
-          },
-        ],
-        model: "meta-llama/llama-4-maverick-17b-128e-instruct",
-        temperature: 0.1,
-        max_tokens: 200,
-      });
-
-      const response = completion.choices[0]?.message?.content?.trim();
-      if (!response) {
-        return { expense: null, confidence: 0.0 };
-      }
-
-      console.log("🤖 Groq OCR with confidence response:", response);
-      const cleanedResponse = response
-        .replace(/```json\n?/g, "")
-        .replace(/```\n?/g, "")
-        .trim();
-      const parsed = JSON.parse(cleanedResponse);
-
-      if (parsed.error || !parsed.item || !parsed.price) {
-        return { expense: null, confidence: parsed.confidence || 0.0 };
-      }
-
-      const expense: ExpenseData = {
-        item: parsed.item,
-        price: parsed.price,
-        currency: parsed.currency || "USD",
-        date: new Date().toISOString().split("T")[0] || "",
-      };
-
-      return { expense, confidence: parsed.confidence || 0.5 };
-    } catch (error) {
-      console.error("❌ Error extracting expense with confidence:", error);
-      return { expense: null, confidence: 0.0 };
-    }
-  }
-
-  private async handleUncertainOCR(
-    expense: ExpenseData,
-    originalMessage: Message,
-    mongoService: MongoService,
-    userCurrency: string
-  ): Promise<void> {
-    try {
-      // Store the uncertain expense temporarily for confirmation
-      await mongoService.storePendingExpense(originalMessage.from, expense);
-
-      console.log(`📤 Sending OCR confirmation request to: ${originalMessage.from}`);
-      await this.client.sendMessage(
-        originalMessage.from,
-        `I'm not sure about the total.\nDid you mean ${expense.price.toFixed(2)} ${userCurrency}?\n\nReply with:\n*Yes* → Save it\n*No* → Cancel`
-      );
-    } catch (error) {
-      console.error("❌ Error handling uncertain OCR:", error);
-      await this.client.sendMessage(
-        originalMessage.from,
-        "Sorry, there was an error processing your image. Please try again."
-      );
-    }
-  }
-
-  private async handleFailedOCR(originalMessage: Message): Promise<void> {
-    try {
-      console.log(`📤 Sending OCR failure message to: ${originalMessage.from}`);
-      await this.client.sendMessage(
-        originalMessage.from,
-        `I couldn't read the amount from this image.\n\nMake sure:\n• Full bill is in frame\n• Good light, no blur\n• Numbers are visible\n\nOr, send manually like: Travel 500`
-      );
-    } catch (error) {
-      console.error("❌ Error handling failed OCR:", error);
-    }
   }
 
   private buildImageExpenseReply(
@@ -786,25 +511,30 @@ If invalid or unclear: {"error": "invalid", "confidence": 0.0}`;
     isFromCaption: boolean,
     shortLink?: string
   ): string {
-    let reply = `#${this.padNumber(number)} ${item}: ${this.money(price)} ${currency} 📷 ✅\n`;
-    reply += `${month} ${year} → Spent: ${this.money(totalAmount)} / ${this.money(budget)} ${currency}\n`;
-    reply += `Remaining: ${this.money(remaining)} ${currency}\n`;
+    let reply = `*#${this.padNumber(number)}* • *${item}* — ${this.money(price)} ${currency} 📷 ✅\n`;
+    reply += `_${date}_\n`;
+    reply += `• Spent (${month} ${year}): *${this.money(totalAmount)}* / *${this.money(budget)}* ${currency}\n`;
+    reply += `• Remaining: *${this.money(remaining)}* ${currency}\n`;
     if (shortLink) {
-      reply += `View Image: ${shortLink}\n`;
+      reply += `🔗 View Image: ${shortLink}\n`;
     }
     if (budget > 0 && dailyLimit !== null && todaySpending !== null) {
-      reply += `🎯 Daily limit: ${this.money(dailyLimit)} ${currency}\n`;
+      reply += `🎯 *Daily limit*: ${this.money(dailyLimit)} ${currency}\n`;
       if (todaySpending <= dailyLimit) {
-        reply += `✅ You're on track. Good job!`;
+        reply += `✅ *You're on track*. Keep it up!`;
       } else {
-        reply += `⚠️ You're above your daily limit. Try to save tomorrow.`;
+        reply += `⚠️ *Above daily limit*. Try to save tomorrow.`;
       }
+    }
+
+    // Add tip for first expense
+    if (number === 1) {
+      reply += `\n\n💡 _Tip_: You can also scan expenses from images. Send a receipt photo. Optional: add a caption like _Food_.`;
     }
 
     return reply;
   }
 
-  // Method to handle OCR confirmation responses
   public async handleOCRConfirmation(
     response: string,
     userId: string,

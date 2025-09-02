@@ -6,6 +6,8 @@ import { ExcelService } from './services/ExcelService';
 import { MongoService } from './services/MongoService';
 import { Message, MessageMedia } from './types/wa';
 import mongoose from 'mongoose';
+import { Expense } from './models/ExpenseModel';
+import { CurrencyService } from './services/CurrencyService';
 
 const VERIFY_TOKEN = process.env.META_VERIFY_TOKEN || '';
 const ACCESS_TOKEN = process.env.META_ACCESS_TOKEN || '';
@@ -231,7 +233,13 @@ async function routeMessage(message: Message) {
         await mongoService.setMonthlyBudgetWithCurrency(userId, newBudget, currency);
         const month = new Date().toLocaleString('default', { month: 'long' });
         const year = new Date().getFullYear();
-        await adapter.sendMessage(userId, `Budget set to ${newBudget.toFixed(2)} ${currency} for ${month} ${year} ✅`);
+        const dailyLimit = CurrencyService.getDailyLimit(newBudget);
+        await adapter.sendMessage(
+          userId,
+          `*Budget set* to ${newBudget.toFixed(2)} ${currency} for ${month} ${year} ✅\n` +
+          `🎯 *Daily limit*: ${dailyLimit.toFixed(2)} ${currency}\n\n` +
+          `Now add your first expense. Example: _Grocery 100_`
+        );
         return;
       }
     }
@@ -274,7 +282,14 @@ async function routeMessage(message: Message) {
         await mongoService.setUserState(userId, 'active');
         const month = new Date().toLocaleString('default', { month: 'long' });
         const year = new Date().getFullYear();
-        await adapter.sendMessage(userId, `Budget set to ${numeric.toFixed(2)} ${userCurrency} for ${month} ${year} ✅\n\nNow add your first expense. Example: Grocery 100`);
+        const dailyLimit = CurrencyService.getDailyLimit(numeric);
+        // Confirmation message
+        await adapter.sendMessage(
+          userId,
+          `Budget set to ${numeric.toFixed(2)} ${userCurrency} for ${month} ${year} ✅ Your daily budget is ${dailyLimit.toFixed(2)} ${userCurrency}`
+        );
+        // Follow-up message
+        await adapter.sendMessage(userId, 'Now add your first expense. Example: Grocery 100');
       } else {
         const userCurrency = await mongoService.getUserCurrency(userId);
         await adapter.sendMessage(userId, `Please enter a valid number only.\n👉 Example: If your budget is 2000 ${userCurrency}, type 2000`);
@@ -288,7 +303,13 @@ async function routeMessage(message: Message) {
       if (detected) {
         await mongoService.setUserCurrency(userId, detected);
         await mongoService.setUserState(userId, 'awaiting_budget');
-        await adapter.sendMessage(userId, `Great! We’ll use ${detected} for your budget.\nYour monthly budget?\n👉 Example: If your budget is 2000 ${detected}, type 2000`);
+        // Confirmation message
+        await adapter.sendMessage(userId, `Great! We’ll use ${detected} for your budget.`);
+        // Separate budget prompt with fixed costs note
+        await adapter.sendMessage(
+          userId,
+          `Your monthly budget (after fixed costs like rent, bills, loans)?\n👉 Example: If your budget is 2000 ${detected}, type 2000`
+        );
       } else {
         await adapter.sendMessage(userId, 'Please enter a valid currency. Examples: USD, EUR, INR, BDT, Taka, Rupee, Dollar');
       }
