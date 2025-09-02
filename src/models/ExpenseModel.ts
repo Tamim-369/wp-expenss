@@ -15,6 +15,9 @@ interface IExpense extends Document {
   date: string;
   number: number;
   imageUrl?: string;
+  imageProvider?: 'drive' | 'cloudinary';
+  imageRef?: string; // Drive fileId or Cloudinary public_id
+  imageDeletedAt?: Date;
 }
 
 interface IConversation extends Document {
@@ -38,6 +41,9 @@ const ExpenseSchema = new Schema<IExpense>({
   date: { type: String, required: true },
   number: { type: Number, required: true, index: true },
   imageUrl: { type: String },
+  imageProvider: { type: String, enum: ['drive', 'cloudinary'] },
+  imageRef: { type: String },
+  imageDeletedAt: { type: Date },
 });
 
 const ConversationSchema = new Schema<IConversation>({

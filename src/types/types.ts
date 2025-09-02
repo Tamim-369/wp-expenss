@@ -4,6 +4,8 @@ export interface ExpenseData {
   currency: string;
   date: string;
   imageUrl?: string;
+  imageProvider?: 'drive' | 'cloudinary';
+  imageRef?: string;
 }
 
 export interface GroqExpenseResponse {

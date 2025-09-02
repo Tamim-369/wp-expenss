@@ -22,6 +22,26 @@ async function connectToMongo() {
   console.log('✅ Connected to MongoDB');
 }
 
+// Lightweight startup health check to validate WhatsApp Cloud API token
+async function checkMetaToken(): Promise<void> {
+  try {
+    const url = `https://graph.facebook.com/${GRAPH_VERSION}/${PHONE_NUMBER_ID}?fields=id,display_phone_number`;
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${ACCESS_TOKEN}` } });
+    if (!res.ok) {
+      const body = await res.text();
+      console.error('❌ WhatsApp token health check failed:', res.status, body);
+      if (res.status === 401 || body.includes('code":190') || body.toLowerCase().includes('access token')) {
+        console.error('➡️  Action required: Update META_ACCESS_TOKEN in your .env and restart the server.');
+      }
+      process.exit(1);
+    }
+    console.log('✅ WhatsApp token health check passed');
+  } catch (e) {
+    console.error('❌ Error performing WhatsApp token health check:', e);
+    process.exit(1);
+  }
+}
+
 const adapter = new WhatsAppCloudAdapter({ accessToken: ACCESS_TOKEN, phoneNumberId: PHONE_NUMBER_ID });
 const mongoService = new MongoService();
 const expenseService = new ExpenseService(adapter);
@@ -345,6 +365,7 @@ async function routeMessage(message: Message) {
 
 export async function startServer() {
   await connectToMongo();
+  await checkMetaToken();
   const port = Number(process.env.PORT || 3000);
   console.log(`🚀 Starting Hono server on port ${port}`);
   Bun.serve({ fetch: app.fetch, port, hostname: '0.0.0.0' });

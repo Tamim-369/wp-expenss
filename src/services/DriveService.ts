@@ -1,25 +1,46 @@
 import { google, drive_v3 } from "googleapis";
+import { getAuthorizedOAuth2Client } from "./GoogleOAuth";
 
 export class DriveService {
   private drive: drive_v3.Drive;
   private rootFolderId: string;
 
   constructor() {
-    const clientEmail = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL as string;
-    const privateKey = (process.env.GOOGLE_PRIVATE_KEY || "").replace(/\\n/g, "\n");
     this.rootFolderId = process.env.GDRIVE_ROOT_FOLDER_ID as string;
-
-    if (!clientEmail || !privateKey || !this.rootFolderId) {
-      throw new Error("Missing Google Drive env vars: GOOGLE_SERVICE_ACCOUNT_EMAIL, GOOGLE_PRIVATE_KEY, GDRIVE_ROOT_FOLDER_ID");
+    if (!this.rootFolderId) {
+      throw new Error("Missing Google Drive env var: GDRIVE_ROOT_FOLDER_ID");
     }
 
-    const jwt = new google.auth.JWT({
-      email: clientEmail,
-      key: privateKey,
-      scopes: ["https://www.googleapis.com/auth/drive"],
-    });
+    const hasOAuth = !!(process.env.GOOGLE_OAUTH_CLIENT_ID && process.env.GOOGLE_OAUTH_CLIENT_SECRET);
+    if (hasOAuth) {
+      // Use OAuth (personal My Drive or Shared Drive via user)
+      // Defer auth construction to async init
+      // We can't do async in constructor, so create a temporary placeholder; real client will be set in ensureAuth()
+      this.drive = google.drive({ version: "v3" });
+    } else {
+      // Fallback to Service Account (requires Shared Drive)
+      const clientEmail = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL as string;
+      const privateKey = (process.env.GOOGLE_PRIVATE_KEY || "").replace(/\\n/g, "\n");
+      if (!clientEmail || !privateKey) {
+        throw new Error(
+          "Missing Google Drive credentials. Provide OAuth (GOOGLE_OAUTH_CLIENT_ID/SECRET) or Service Account (GOOGLE_SERVICE_ACCOUNT_EMAIL/GOOGLE_PRIVATE_KEY)."
+        );
+      }
+      const jwt = new google.auth.JWT({
+        email: clientEmail,
+        key: privateKey,
+        scopes: ["https://www.googleapis.com/auth/drive"],
+      });
+      this.drive = google.drive({ version: "v3", auth: jwt });
+    }
+  }
 
-    this.drive = google.drive({ version: "v3", auth: jwt });
+  private async ensureAuth(): Promise<void> {
+    const hasOAuth = !!(process.env.GOOGLE_OAUTH_CLIENT_ID && process.env.GOOGLE_OAUTH_CLIENT_SECRET);
+    if (hasOAuth) {
+      const auth = await getAuthorizedOAuth2Client();
+      this.drive = google.drive({ version: "v3", auth });
+    }
   }
 
   private async findChildFolderByName(parentId: string, name: string): Promise<string | null> {
@@ -27,6 +48,8 @@ export class DriveService {
       q: `'${parentId}' in parents and name = '${name.replace(/'/g, "\'")}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
       fields: "files(id, name)",
       spaces: "drive",
+      includeItemsFromAllDrives: true,
+      supportsAllDrives: true,
     });
     const found = res.data.files?.[0];
     return found?.id || null;
@@ -43,6 +66,7 @@ export class DriveService {
         parents: [parentId],
       },
       fields: "id",
+      supportsAllDrives: true,
     });
     const id = res.data.id;
     if (!id) throw new Error("Failed to create folder on Drive");
@@ -65,6 +89,7 @@ export class DriveService {
       await this.drive.permissions.create({
         fileId,
         requestBody: { role: "reader", type: "anyone" },
+        supportsAllDrives: true,
       });
     } catch (e) {
       // If permission already exists, ignore
@@ -79,6 +104,7 @@ export class DriveService {
     userId: string;
     date?: Date;
   }): Promise<{ fileId: string; webViewLink: string; directLink: string }> {
+    await this.ensureAuth();
     const date = options.date || new Date();
     const parentId = await this.ensureUserYearMonthFolders(options.userId, date);
 
@@ -94,6 +120,7 @@ export class DriveService {
           : (options.buffer as any),
       },
       fields: "id, webViewLink",
+      supportsAllDrives: true,
     });
 
     const fileId = res.data.id as string;
@@ -104,5 +131,10 @@ export class DriveService {
     const webViewLink = `https://drive.google.com/file/d/${fileId}/view`;
     const directLink = `https://drive.google.com/uc?id=${fileId}&export=view`;
     return { fileId, webViewLink, directLink };
+  }
+
+  public async deleteFile(fileId: string): Promise<void> {
+    await this.ensureAuth();
+    await this.drive.files.delete({ fileId, supportsAllDrives: true });
   }
 }

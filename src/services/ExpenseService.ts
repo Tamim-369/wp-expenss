@@ -7,13 +7,13 @@ import type {
 } from "../types/types";
 import { Expense } from "../models/ExpenseModel";
 import { CurrencyService } from "./CurrencyService";
-import { DriveService } from "./DriveService";
+import { CloudinaryService } from "./CloudinaryService";
 import { MongoService } from "./MongoService";
 
 export class ExpenseService {
   private groq: Groq;
   private client: Client;
-  private driveService: DriveService | null = null;
+  private cloudinaryService: CloudinaryService | null = null;
 
   constructor(client: Client) {
     this.groq = new Groq({
@@ -21,11 +21,10 @@ export class ExpenseService {
     });
     this.client = client;
     try {
-      this.driveService = new DriveService();
+      this.cloudinaryService = new CloudinaryService();
     } catch (e) {
-      // If Drive not configured, keep null; we'll skip uploads gracefully
-      console.warn("Google Drive not configured. Skipping image uploads:", (e as any)?.message || e);
-      this.driveService = null;
+      console.warn("Cloudinary not configured. Skipping Cloudinary uploads:", (e as any)?.message || e);
+      this.cloudinaryService = null;
     }
   }
 
@@ -104,33 +103,38 @@ export class ExpenseService {
   ): Promise<void> {
     try {
       const imageDataUrl = `data:${media.mimetype};base64,${media.data}`;
-      // Prepare upload to Drive (if configured)
+      // Prepare upload to Cloudinary
       let uploadedImageUrl: string | undefined;
+      let uploadedImageRef: string | undefined;
+      let uploadedProvider: 'cloudinary' | undefined;
       try {
-        if (this.driveService) {
-          const buffer = Buffer.from(media.data, 'base64');
-          const ts = new Date();
-          const yyyy = ts.getFullYear();
-          const mm = String(ts.getMonth() + 1).padStart(2, '0');
-          const dd = String(ts.getDate()).padStart(2, '0');
-          const hh = String(ts.getHours()).padStart(2, '0');
-          const mi = String(ts.getMinutes()).padStart(2, '0');
-          const ss = String(ts.getSeconds()).padStart(2, '0');
-          const safeCaption = (caption || '').trim().replace(/[^a-z0-9-_]+/gi, '_').slice(0, 40);
-          const baseName = safeCaption || 'expense';
-          const ext = media.mimetype?.split('/')?.[1] || 'jpg';
-          const filename = `${yyyy}${mm}${dd}_${hh}${mi}${ss}_${baseName}.${ext}`;
-          const uploaded = await this.driveService.uploadImage({
+        const buffer = Buffer.from(media.data, 'base64');
+        const ts = new Date();
+        const yyyy = ts.getFullYear();
+        const mm = String(ts.getMonth() + 1).padStart(2, '0');
+        const dd = String(ts.getDate()).padStart(2, '0');
+        const hh = String(ts.getHours()).padStart(2, '0');
+        const mi = String(ts.getMinutes()).padStart(2, '0');
+        const ss = String(ts.getSeconds()).padStart(2, '0');
+        const safeCaption = (caption || '').trim().replace(/[^a-z0-9-_]+/gi, '_').slice(0, 40);
+        const baseName = safeCaption || 'expense';
+        const ext = media.mimetype?.split('/')?.[1] || 'jpg';
+        const filename = `${yyyy}${mm}${dd}_${hh}${mi}${ss}_${baseName}.${ext}`;
+
+        if (this.cloudinaryService) {
+          const uploaded = await this.cloudinaryService.uploadImage({
             buffer,
             mimetype: media.mimetype || 'image/jpeg',
             filename,
             userId: originalMessage.from,
             date: ts,
           });
-          uploadedImageUrl = uploaded.webViewLink;
+          uploadedImageUrl = uploaded.secureUrl;
+          uploadedImageRef = uploaded.publicId;
+          uploadedProvider = 'cloudinary';
         }
       } catch (e) {
-        console.error('❌ Drive upload failed (continuing without URL):', e);
+        console.error('❌ Image upload failed (continuing without URL):', e);
       }
       const userCurrency = await mongoService.getUserCurrency(originalMessage.from);
 
@@ -183,6 +187,8 @@ export class ExpenseService {
         finalExpense.price = Math.round(finalExpense.price * 100) / 100;
         if (uploadedImageUrl) {
           finalExpense.imageUrl = uploadedImageUrl;
+          if (uploadedProvider) finalExpense.imageProvider = uploadedProvider;
+          if (uploadedImageRef) finalExpense.imageRef = uploadedImageRef;
         }
 
         const created = await this.addToMongo(

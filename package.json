@@ -9,7 +9,8 @@
     "dev": "bun --watch src/index.ts",
     "build": "bun build src/index.ts --outdir ./dist --target bun",
     "type-check": "tsc --noEmit",
-    "reset-session": "node scripts/reset-session.js"
+    "reset-session": "node scripts/reset-session.js",
+    "images:cleanup": "bun run scripts/cleanup-old-images.ts"
   },
   "dependencies": {
     "dotenv": "^16.3.1",
@@ -20,6 +21,7 @@
     "mongoose": "^8.17.1",
     "qrcode-terminal": "^0.12.0",
     "whatsapp-web.js": "^1.23.0",
+    "cloudinary": "^2.5.1",
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
