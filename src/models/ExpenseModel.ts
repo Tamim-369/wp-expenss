@@ -14,6 +14,7 @@ interface IExpense extends Document {
   currency: string;
   date: string;
   number: number;
+  imageUrl?: string;
 }
 
 interface IConversation extends Document {
@@ -36,6 +37,7 @@ const ExpenseSchema = new Schema<IExpense>({
   currency: { type: String, required: true, default: "USD" },
   date: { type: String, required: true },
   number: { type: Number, required: true, index: true },
+  imageUrl: { type: String },
 });
 
 const ConversationSchema = new Schema<IConversation>({

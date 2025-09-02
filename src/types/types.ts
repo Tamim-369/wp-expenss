@@ -3,6 +3,7 @@ export interface ExpenseData {
   price: number;
   currency: string;
   date: string;
+  imageUrl?: string;
 }
 
 export interface GroqExpenseResponse {

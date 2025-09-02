@@ -7,17 +7,26 @@ import type {
 } from "../types/types";
 import { Expense } from "../models/ExpenseModel";
 import { CurrencyService } from "./CurrencyService";
+import { DriveService } from "./DriveService";
 import { MongoService } from "./MongoService";
 
 export class ExpenseService {
   private groq: Groq;
   private client: Client;
+  private driveService: DriveService | null = null;
 
   constructor(client: Client) {
     this.groq = new Groq({
       apiKey: process.env.GROQ_API_KEY,
     });
     this.client = client;
+    try {
+      this.driveService = new DriveService();
+    } catch (e) {
+      // If Drive not configured, keep null; we'll skip uploads gracefully
+      console.warn("Google Drive not configured. Skipping image uploads:", (e as any)?.message || e);
+      this.driveService = null;
+    }
   }
 
   public async processExpenseMessage(
@@ -95,6 +104,34 @@ export class ExpenseService {
   ): Promise<void> {
     try {
       const imageDataUrl = `data:${media.mimetype};base64,${media.data}`;
+      // Prepare upload to Drive (if configured)
+      let uploadedImageUrl: string | undefined;
+      try {
+        if (this.driveService) {
+          const buffer = Buffer.from(media.data, 'base64');
+          const ts = new Date();
+          const yyyy = ts.getFullYear();
+          const mm = String(ts.getMonth() + 1).padStart(2, '0');
+          const dd = String(ts.getDate()).padStart(2, '0');
+          const hh = String(ts.getHours()).padStart(2, '0');
+          const mi = String(ts.getMinutes()).padStart(2, '0');
+          const ss = String(ts.getSeconds()).padStart(2, '0');
+          const safeCaption = (caption || '').trim().replace(/[^a-z0-9-_]+/gi, '_').slice(0, 40);
+          const baseName = safeCaption || 'expense';
+          const ext = media.mimetype?.split('/')?.[1] || 'jpg';
+          const filename = `${yyyy}${mm}${dd}_${hh}${mi}${ss}_${baseName}.${ext}`;
+          const uploaded = await this.driveService.uploadImage({
+            buffer,
+            mimetype: media.mimetype || 'image/jpeg',
+            filename,
+            userId: originalMessage.from,
+            date: ts,
+          });
+          uploadedImageUrl = uploaded.webViewLink;
+        }
+      } catch (e) {
+        console.error('❌ Drive upload failed (continuing without URL):', e);
+      }
       const userCurrency = await mongoService.getUserCurrency(originalMessage.from);
 
       let finalExpense: ExpenseData | null = null;
@@ -144,6 +181,9 @@ export class ExpenseService {
         // Use user's saved currency
         finalExpense.currency = userCurrency;
         finalExpense.price = Math.round(finalExpense.price * 100) / 100;
+        if (uploadedImageUrl) {
+          finalExpense.imageUrl = uploadedImageUrl;
+        }
 
         const created = await this.addToMongo(
           finalExpense,

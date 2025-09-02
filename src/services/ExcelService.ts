@@ -76,7 +76,7 @@ export class ExcelService {
       }
 
       const worksheet = XLSX.utils.json_to_sheet(
-        expenses.map((exp) => ({
+        expenses.map((exp: any) => ({
           Number:
             typeof exp.number === "number"
               ? `#${String(exp.number).padStart(3, "0")}`
@@ -85,6 +85,7 @@ export class ExcelService {
           Item: exp.item,
           Price: (Math.round(exp.price * 100) / 100).toFixed(2),
           Currency: exp.currency,
+          "Image URL": exp.imageUrl || "",
         }))
       );
       const workbook = XLSX.utils.book_new();
