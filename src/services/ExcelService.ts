@@ -75,19 +75,42 @@ export class ExcelService {
         return;
       }
 
-      const worksheet = XLSX.utils.json_to_sheet(
-        expenses.map((exp: any) => ({
-          Number:
-            typeof exp.number === "number"
-              ? `#${String(exp.number).padStart(3, "0")}`
-              : "",
-          Date: exp.date,
-          Item: exp.item,
-          Price: (Math.round(exp.price * 100) / 100).toFixed(2),
-          Currency: exp.currency,
-          "Image URL": exp.imageUrl || "",
-        }))
-      );
+      // Prepare data rows
+      const rows = expenses.map((exp: any) => ({
+        Number:
+          typeof exp.number === "number"
+            ? `#${String(exp.number).padStart(3, "0")}`
+            : "",
+        Date: exp.date,
+        Item: exp.item,
+        Price: (Math.round(exp.price * 100) / 100).toFixed(2),
+        Currency: exp.currency,
+        Image: "View Image", // placeholder text; hyperlink applied below if available
+      }));
+
+      // Create sheet with a fixed header order
+      const headers = ["Number", "Date", "Item", "Price", "Currency", "Image"];
+      const worksheet = XLSX.utils.json_to_sheet(rows, { header: headers });
+
+      // Apply hyperlinks for Image column
+      const baseUrl = (process.env.PUBLIC_BASE_URL || "").trim().replace(/\/$/, "");
+      const imageColIndex = headers.indexOf("Image");
+      if (imageColIndex >= 0) {
+        for (let r = 0; r < expenses.length; r++) {
+          const exp: any = expenses[r];
+          const hasImage = !!exp.imageUrl;
+          if (!hasImage) continue;
+          const rowIndex = r + 2; // +1 for 1-based rows, +1 for header
+          const colIndex = imageColIndex + 1; // 1-based columns
+          const cellAddress = XLSX.utils.encode_cell({ r: rowIndex - 1, c: colIndex - 1 });
+          const cell = worksheet[cellAddress] || { t: 's', v: 'View Image' };
+          const shortLink = baseUrl ? `${baseUrl}/v/${String(exp._id)}` : String(exp.imageUrl);
+          (cell as any).l = { Target: shortLink, Tooltip: 'Open image' };
+          cell.t = 's';
+          cell.v = 'View Image';
+          worksheet[cellAddress] = cell as any;
+        }
+      }
       const workbook = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(workbook, worksheet, "Expenses");
 

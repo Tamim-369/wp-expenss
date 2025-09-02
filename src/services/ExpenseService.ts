@@ -783,11 +783,15 @@ If invalid or unclear: {"error": "invalid", "confidence": 0.0}`;
     remaining: number,
     dailyLimit: number | null,
     todaySpending: number | null,
-    isFromCaption: boolean
+    isFromCaption: boolean,
+    shortLink?: string
   ): string {
     let reply = `#${this.padNumber(number)} ${item}: ${this.money(price)} ${currency} 📷 ✅\n`;
     reply += `${month} ${year} → Spent: ${this.money(totalAmount)} / ${this.money(budget)} ${currency}\n`;
     reply += `Remaining: ${this.money(remaining)} ${currency}\n`;
+    if (shortLink) {
+      reply += `View Image: ${shortLink}\n`;
+    }
     if (budget > 0 && dailyLimit !== null && todaySpending !== null) {
       reply += `🎯 Daily limit: ${this.money(dailyLimit)} ${currency}\n`;
       if (todaySpending <= dailyLimit) {
