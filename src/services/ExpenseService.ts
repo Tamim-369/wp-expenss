@@ -377,6 +377,9 @@ Please send a clearer photo, add a caption like _Food_, or type manually like: C
         throw new ImageProcessingError('Groq did not return a parsable expense.');
       }
       const finalExpense: ExpenseData = result.expense;
+      // Override item name based on user caption or default to "Image Scan"
+      const userCaption = (caption || '').trim();
+      finalExpense.item = userCaption || 'Image Scan';
 
       // Normalize to user's currency and attach image metadata
       finalExpense.currency = userCurrency;
