@@ -379,7 +379,7 @@ export class WhatsAppClient {
           console.log(`📤 Confirmed budget setup for: ${userId}`);
           await this.client.sendMessage(
             userId,
-            `Budget set to ${numeric.toFixed(2)} ${userCurrency} for ${currentMonthName} ${currentYear} ✅\n🎯 Your daily limit is ${Math.round(dailyLimit).toString()} ${userCurrency}\n\nNow add your first expense. Example: Grocery 100`
+            `Budget set to ${numeric.toFixed(2)} ${userCurrency} for ${currentMonthName} ${currentYear} ✅\n🎯 Your daily limit is ${Math.round(dailyLimit).toString()} ${userCurrency}\n\n*Now add your first expense*. Example: _Grocery 100_`
           );
           return;
         } else {
@@ -512,7 +512,7 @@ export class WhatsAppClient {
             console.log(`📤 Sending invalid format message to: ${userId}`);
             await this.client.sendMessage(
               userId,
-              `Didn’t get that. Try: Grocery 100.\nWant quick commands? Reply: Help`
+              `❌ Didn’t get that. Try: Grocery 100.\nWant quick commands? Reply: *Help*`
             );
           }
         }
@@ -584,7 +584,7 @@ export class WhatsAppClient {
           console.log(`📤 Asking currency change confirmation to: ${userId}`);
           await this.client.sendMessage(
             userId,
-            `Change currency to ${detectedCurrency}? Existing entries stay in ${currentCurrency}.\nReply YES to confirm.`
+            `Change currency to ${detectedCurrency}? Existing entries stay in ${currentCurrency}.\nReply *YES* to confirm and *NO* to cancel.`
           );
         } else {
           await this.client.sendMessage(

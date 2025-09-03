@@ -326,8 +326,7 @@ async function routeMessage(message: Message) {
         await adapter.sendMessage(
           userId,
           `*Budget set* to ${newBudget.toFixed(2)} ${currency} for ${month} ${year} ✅\n` +
-          `🎯 *Daily limit*: ${dailyLimit.toFixed(2)} ${currency}\n\n` +
-          `Now add your first expense. Example: _Grocery 100_`
+          `🎯 *Daily limit*: ${dailyLimit.toFixed(2)} ${currency}\n\n` 
         );
         return;
       }
@@ -342,7 +341,7 @@ async function routeMessage(message: Message) {
         if (detected) {
           const currentCurrency = await mongoService.getUserCurrency(userId);
           await mongoService.setPendingCurrency(userId, detected);
-          await adapter.sendMessage(userId, `Change currency to ${detected}? Existing entries stay in ${currentCurrency}.\nReply YES to confirm.`);
+          await adapter.sendMessage(userId, `Change currency to ${detected}? Existing entries stay in ${currentCurrency}.\nReply *YES* to confirm and *NO* to cancel.`);
         } else {
           await adapter.sendMessage(userId, '❌ Invalid currency. Examples: USD, EUR, INR, BDT, Taka, Rupee, Dollar');
         }
@@ -463,7 +462,7 @@ async function routeMessage(message: Message) {
       if (hasNumber && hasText) {
         await expenseService.processExpenseMessage(trimmed, message, mongoService);
       } else {
-        await adapter.sendMessage(userId, `Didn’t get that. Try: Grocery 100.\nWant quick commands? Reply: Help`);
+        await adapter.sendMessage(userId,   `❌ Didn’t get that. Try: Grocery 100.\nWant quick commands? Reply: *Help*`);
       }
       return;
     }
