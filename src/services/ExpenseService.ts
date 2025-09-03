@@ -147,15 +147,87 @@ export class ExpenseService {
     return created;
   }
 
-  // Extract expense from image. Placeholder implementation returning low confidence.
-  // In future, integrate OCR and LLM extraction.
-  private async extractExpenseWithConfidence(imageDataUrl: string, caption: string): Promise<{ confidence: number; expense: ExpenseData | null; }> {
-    // If caption looks parseable, try that with a medium confidence
-    const parsedFromCaption = await this.extractExpenseData(caption || '');
+  // Extract expense from image using Groq multimodal model + light caption heuristic.
+  // Sends the image (data URL) and caption to the model and asks for structured JSON.
+  private async extractExpenseWithConfidence(
+    imageDataUrl: string,
+    caption: string
+  ): Promise<{ confidence: number; expense: ExpenseData | null }> {
+    // 1) Quick heuristic: if caption already looks like an expense, prefer it.
+    const parsedFromCaption = await this.extractExpenseData(caption || "");
     if (parsedFromCaption) {
       return { confidence: 0.6, expense: parsedFromCaption };
     }
-    return { confidence: 0.0, expense: null };
+
+    try {
+      // 2) Ask Groq vision model to extract structured data.
+      const today = new Date().toISOString().slice(0, 10);
+      const systemPrompt =
+        "You are an assistant that extracts a single expense from a receipt image. " +
+        "Return strict JSON with keys: item (string), price (number), currency (string, ISO like USD/BDT if visible else empty). " +
+        "If multiple line items exist, use the grand total as price and leave item blank or 'Total'. No extra text, ONLY JSON.";
+
+      const userText =
+        (caption?.trim() ? `Caption: ${caption.trim()}\n` : "") +
+        "Extract expense fields from this image. Output JSON only.";
+
+      const completion = await this.groq.chat.completions.create({
+        model: "meta-llama/llama-4-maverick-17b-128e-instruct",
+        temperature: 0.2,
+        max_completion_tokens: 512,
+        top_p: 1,
+        stream: false,
+        messages: [
+          { role: "system", content: systemPrompt },
+          {
+            role: "user",
+            content: [
+              { type: "text", text: userText },
+              { type: "image_url", image_url: { url: imageDataUrl } },
+            ] as any,
+          },
+        ],
+      } as any);
+
+      const content = completion?.choices?.[0]?.message?.content || "";
+
+      // 3) Parse JSON out of the model response (defensive against extra text)
+      let jsonText = content;
+      const firstBrace = content.indexOf("{");
+      const lastBrace = content.lastIndexOf("}");
+      if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+        jsonText = content.slice(firstBrace, lastBrace + 1);
+      }
+
+      let parsed: GroqExpenseResponse | null = null;
+      try {
+        parsed = JSON.parse(jsonText) as GroqExpenseResponse;
+      } catch (_) {
+        parsed = null;
+      }
+
+      if (parsed && typeof parsed.price === "number" && parsed.price > 0) {
+        // If user didn't provide a caption, force a generic name
+        const modelItem = (parsed.item || "").toString().trim();
+        const item = (caption && caption.trim()) ? (modelItem || "Total") : "Image scan";
+        const currency = (parsed.currency || "").toString().trim() || "USD";
+        const expense: ExpenseData = {
+          item,
+          price: Math.round(parsed.price * 100) / 100,
+          currency,
+          date: today,
+        };
+        // High/medium confidence if we have a numeric total
+        const confidence = item ? 0.7 : 0.6;
+        return { confidence, expense };
+      }
+
+      // If model didn't return usable data
+      return { confidence: 0.0, expense: null };
+    } catch (err) {
+      console.error("❌ Groq vision extraction failed:", err);
+      return { confidence: 0.0, expense: null };
+    }
   }
 
   // Ask user to confirm OCR-parsed expense. Stores pending expense and sets state to awaiting_ocr_confirmation.
@@ -347,7 +419,7 @@ Please send a clearer photo, add a caption like _Food_, or type manually like: C
             await mongoService.storePendingImageExpenseDraft(originalMessage.from, draft);
             await this.client.sendMessage(
               originalMessage.from,
-              `Couldn't read the amount from the photo.\nReply with the amount for *${captionNameHint}* (number only), e.g., 120\nOr send full: ${captionNameHint} 120`
+              `I couldn’t read the amount from this image.\n\n**Make sure:**\n\n• Full bill is in frame\n• Good light, no blur\n• Numbers are visible\n\nOr, send manually like: ${captionNameHint} 500"`
             );
             return;
           } else {
@@ -603,14 +675,14 @@ Please send a clearer photo, add a caption like _Food_, or type manually like: C
     isFromCaption: boolean,
     shortLink?: string
   ): string {
-    let reply = `#${this.padNumber(number)} ${item}: ${this.moneyCompact(price)} ${currency} ✅\n`;
+    let reply = `*#${this.padNumber(number)} ${item}: ${this.moneyCompact(price)} ${currency} ✅*\n`;
     reply += `${this.abbrevMonth(month)} ${year} → Spent: ${this.moneyCompact(totalAmount)} / ${this.moneyCompact(budget)} ${currency}\n`;
     reply += `Remaining: ${this.moneyCompact(remaining)} ${currency}\n`;
     if (shortLink) {
       reply += `🔗 View Image: ${shortLink}\n`;
     }
     if (budget > 0 && dailyLimit !== null && todaySpending !== null) {
-      reply += `🎯 Daily limit: ${this.moneyCompact(dailyLimit)} ${currency}\n`;
+      reply += `*🎯 Daily limit: ${this.moneyCompact(dailyLimit)} ${currency}*\n`;
       if (todaySpending <= dailyLimit) {
         reply += `✅ You're on track. Keep it up!`;
       } else {
