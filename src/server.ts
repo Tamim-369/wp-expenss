@@ -259,7 +259,7 @@ async function routeMessage(message: Message) {
       if (trimmed) {
         await expenseService.finalizePendingImageExpense(trimmed, message, mongoService);
       } else {
-        await adapter.sendMessage(userId, 'Reply with the amount (number only), e.g., 120. Or send full like: Item 120');
+        await adapter.sendMessage(userId, `I couldn’t read the amount from this image.\n\n*Make sure:*\n\n• Full bill is in frame\n• Good light, no blur\n• Numbers are visible\n\nOr, send manually like: Grocery 500`);
       }
       return;
     }

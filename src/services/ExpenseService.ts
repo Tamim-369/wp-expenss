@@ -10,6 +10,14 @@ import { CurrencyService } from "./CurrencyService";
 import { CloudinaryService } from "./CloudinaryService";
 import { MongoService } from "./MongoService";
 
+class ImageProcessingError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ImageProcessingError";
+  }
+}
+
+
 export class ExpenseService {
   private groq: Groq;
   private client: Client;
@@ -56,7 +64,7 @@ export class ExpenseService {
     }
 
     if (!data) {
-      await this.client.sendMessage(userId, 'Please send a valid amount (number only), e.g., 120');
+      await this.client.sendMessage(userId, `I couldn’t read the amount from this image.\n\n*Make sure:*\n\n• Full bill is in frame\n• Good light, no blur\n• Numbers are visible\n\nOr, send manually like: Grocery 500`);
       return;
     }
 
@@ -150,15 +158,8 @@ export class ExpenseService {
   // Extract expense from image using Groq multimodal model + light caption heuristic.
   // Sends the image (data URL) and caption to the model and asks for structured JSON.
   private async extractExpenseWithConfidence(
-    imageDataUrl: string,
-    caption: string
+    imageDataUrl: string
   ): Promise<{ confidence: number; expense: ExpenseData | null }> {
-    // 1) Quick heuristic: if caption already looks like an expense, prefer it.
-    const parsedFromCaption = await this.extractExpenseData(caption || "");
-    if (parsedFromCaption) {
-      return { confidence: 0.6, expense: parsedFromCaption };
-    }
-
     try {
       // 2) Ask Groq vision model to extract structured data.
       const today = new Date().toISOString().slice(0, 10);
@@ -167,9 +168,7 @@ export class ExpenseService {
         "Return strict JSON with keys: item (string), price (number), currency (string, ISO like USD/BDT if visible else empty). " +
         "If multiple line items exist, use the grand total as price and leave item blank or 'Total'. No extra text, ONLY JSON.";
 
-      const userText =
-        (caption?.trim() ? `Caption: ${caption.trim()}\n` : "") +
-        "Extract expense fields from this image. Output JSON only.";
+      const userText = "Extract expense fields from this image. Output JSON only.";
 
       const completion = await this.groq.chat.completions.create({
         model: "meta-llama/llama-4-maverick-17b-128e-instruct",
@@ -207,9 +206,9 @@ export class ExpenseService {
       }
 
       if (parsed && typeof parsed.price === "number" && parsed.price > 0) {
-        // If user didn't provide a caption, force a generic name
+        // Always use generic name for image-only flow
         const modelItem = (parsed.item || "").toString().trim();
-        const item = (caption && caption.trim()) ? (modelItem || "Total") : "Image scan";
+        const item = modelItem || "Image scan";
         const currency = (parsed.currency || "").toString().trim() || "USD";
         const expense: ExpenseData = {
           item,
@@ -217,8 +216,8 @@ export class ExpenseService {
           currency,
           date: today,
         };
-        // High/medium confidence if we have a numeric total
-        const confidence = item ? 0.7 : 0.6;
+        // Confidence is not used for branching anymore; keep a nominal value
+        const confidence = 0.7;
         return { confidence, expense };
       }
 
@@ -323,6 +322,9 @@ Please send a clearer photo, add a caption like _Food_, or type manually like: C
     }
   }
 
+
+  
+
   public async processImageMessage(
     media: MessageMedia,
     caption: string,
@@ -331,10 +333,11 @@ Please send a clearer photo, add a caption like _Food_, or type manually like: C
   ): Promise<void> {
     try {
       const imageDataUrl = `data:${media.mimetype};base64,${media.data}`;
-      // Prepare upload to Cloudinary
       let uploadedImageUrl: string | undefined;
       let uploadedImageRef: string | undefined;
       let uploadedProvider: 'cloudinary' | undefined;
+
+      // Upload image to Cloudinary (best-effort)
       try {
         const buffer = Buffer.from(media.data, 'base64');
         const ts = new Date();
@@ -364,128 +367,77 @@ Please send a clearer photo, add a caption like _Food_, or type manually like: C
       } catch (e) {
         console.error('❌ Image upload failed (continuing without URL):', e);
       }
+
+      // User currency
       const userCurrency = await mongoService.getUserCurrency(originalMessage.from);
 
-      let finalExpense: ExpenseData | null = null;
-      let isFromCaption = false;
-      // Heuristic: treat short, numberless captions as a user-provided item name hint
-      const captionNameHint = caption && caption.trim() && !/\d/.test(caption)
-        ? caption.trim().substring(0, 50)
-        : '';
+      // Groq-only extraction
+      const result = await this.extractExpenseWithConfidence(imageDataUrl);
+      if (!result.expense) {
+        throw new ImageProcessingError('Groq did not return a parsable expense.');
+      }
+      const finalExpense: ExpenseData = result.expense;
 
-      // Case A: Image + Caption - prioritize caption
-      if (caption.trim()) {
-        finalExpense = await this.extractExpenseData(caption);
-        if (finalExpense) {
-          console.log("✅ Using caption-based expense data:", finalExpense);
-          isFromCaption = true;
-        }
+      // Normalize to user's currency and attach image metadata
+      finalExpense.currency = userCurrency;
+      finalExpense.price = Math.round(finalExpense.price * 100) / 100;
+      if (uploadedImageUrl) {
+        finalExpense.imageUrl = uploadedImageUrl;
+        if (uploadedProvider) finalExpense.imageProvider = uploadedProvider;
+        if (uploadedImageRef) finalExpense.imageRef = uploadedImageRef;
       }
 
-      // Case B, C, D: Image processing with confidence levels
-      if (!finalExpense) {
-        const ocrResult = await this.extractExpenseWithConfidence(imageDataUrl, caption);
+      // Save
+      const created = await this.addToMongo(finalExpense, originalMessage.from, mongoService);
 
-        if (ocrResult.confidence >= 0.60) {
-          // Case B: High confidence - direct save
-          finalExpense = ocrResult.expense;
-          // If user caption looked like a name (no numbers), override item with it
-          if (finalExpense && captionNameHint) {
-            finalExpense.item = captionNameHint;
-          }
-          console.log("✅ High confidence OCR result:", finalExpense);
-        } else if (ocrResult.confidence >= 0.5) {
-          // Case C: Medium confidence - ask for confirmation
-          // If we have a name hint from caption, carry it into the confirmation step
-          if (ocrResult.expense && captionNameHint) {
-            ocrResult.expense.item = captionNameHint;
-          }
-          await this.handleUncertainOCR(ocrResult.expense!, originalMessage, mongoService, userCurrency);
-          return;
-        } else {
-          // Case D: Low confidence
-          if (captionNameHint) {
-            // Fallback: store a pending draft with the image and item hint; ask user for the amount
-            const today = new Date().toISOString().slice(0, 10);
-            const draft: ExpenseData = {
-              item: captionNameHint,
-              price: 0,
-              currency: userCurrency,
-              date: today,
-            };
-            if (uploadedImageUrl) draft.imageUrl = uploadedImageUrl;
-            if (uploadedProvider) draft.imageProvider = uploadedProvider;
-            if (uploadedImageRef) draft.imageRef = uploadedImageRef;
-            await mongoService.storePendingImageExpenseDraft(originalMessage.from, draft);
-            await this.client.sendMessage(
-              originalMessage.from,
-              `I couldn’t read the amount from this image.\n\n**Make sure:**\n\n• Full bill is in frame\n• Good light, no blur\n• Numbers are visible\n\nOr, send manually like: ${captionNameHint} 500"`
-            );
-            return;
-          } else {
-            // Ask for a clearer photo or manual entry
-            await this.handleFailedOCR(originalMessage);
-            return;
-          }
-        }
-      }
+      // Totals and reply
+      const monthlyTotal = await mongoService.calculateMonthlyTotal(
+        originalMessage.from,
+        finalExpense.date
+      );
+      const budget = await mongoService.getMonthlyBudget(originalMessage.from);
+      const remaining = budget - monthlyTotal.totalAmount;
+      const todaySpending = await CurrencyService.getTodaysSpending(originalMessage.from);
+      const dailyLimit = budget > 0 ? CurrencyService.calculateDynamicDailyLimit(remaining) : null;
 
-      if (finalExpense) {
-        // Use user's saved currency
-        finalExpense.currency = userCurrency;
-        finalExpense.price = Math.round(finalExpense.price * 100) / 100;
-        if (uploadedImageUrl) {
-          finalExpense.imageUrl = uploadedImageUrl;
-          if (uploadedProvider) finalExpense.imageProvider = uploadedProvider;
-          if (uploadedImageRef) finalExpense.imageRef = uploadedImageRef;
-        }
+      const replyMessage = this.buildImageExpenseReply(
+        created.number,
+        finalExpense.item,
+        finalExpense.currency,
+        finalExpense.price,
+        finalExpense.date,
+        monthlyTotal.month,
+        monthlyTotal.year,
+        monthlyTotal.currency,
+        monthlyTotal.totalAmount,
+        monthlyTotal.expenseCount,
+        budget,
+        remaining,
+        dailyLimit,
+        todaySpending,
+        false
+      );
 
-        const created = await this.addToMongo(
-          finalExpense,
+      console.log(`📤 Sending image expense reply to: ${originalMessage.from}`);
+      await this.client.sendMessage(originalMessage.from, replyMessage);
+
+      if (created.number === 1) {
+        await this.client.sendMessage(
           originalMessage.from,
-          mongoService
+          '💡 Tip: You can also scan expenses from images. Send a receipt photo. Optional: add a caption like Food.'
         );
-        const monthlyTotal = await mongoService.calculateMonthlyTotal(
-          originalMessage.from,
-          finalExpense.date
-        );
-        const budget = await mongoService.getMonthlyBudget(originalMessage.from);
-        const remaining = budget - monthlyTotal.totalAmount;
-
-        const todaySpending = await CurrencyService.getTodaysSpending(originalMessage.from);
-        const dailyLimit = budget > 0 ? CurrencyService.calculateDynamicDailyLimit(remaining) : null;
-
-        const replyMessage = this.buildImageExpenseReply(
-          created.number,
-          finalExpense.item,
-          finalExpense.currency,
-          finalExpense.price,
-          finalExpense.date,
-          monthlyTotal.month,
-          monthlyTotal.year,
-          monthlyTotal.currency,
-          monthlyTotal.totalAmount,
-          monthlyTotal.expenseCount,
-          budget,
-          remaining,
-          dailyLimit,
-          todaySpending,
-          isFromCaption
-        );
-
-        console.log(`📤 Sending image expense reply to: ${originalMessage.from}`);
-        await this.client.sendMessage(originalMessage.from, replyMessage);
-        if (created.number === 1) {
-          await this.client.sendMessage(originalMessage.from, '💡 Tip: You can also scan expenses from images. Send a receipt photo. Optional: add a caption like Food.');
-        }
       }
     } catch (error) {
-      console.error("❌ Error processing image message:", error);
-      await this.client.sendMessage(
-        originalMessage.from,
-        "Sorry, there was an error processing your image. Please try again."
-      );
-      throw error;
+      console.error('❌ Error processing image message:', error);
+      if (error instanceof ImageProcessingError) {
+        await this.client.sendMessage(
+          originalMessage.from,
+          `I couldn’t read the amount from this image.\n\n*Make sure:*\n\n• Full bill is in frame\n• Good light, no blur\n• Numbers are visible\n\nOr, send manually like: Grocery 500`
+        );
+      } else {
+        // Internal errors: log only to avoid confusing the user
+        console.error('❌ Internal error (not shown to user):', error);
+      }
     }
   }
 
