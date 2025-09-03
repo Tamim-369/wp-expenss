@@ -357,7 +357,7 @@ export class WhatsAppClient {
         console.log(`📤 Sending currency-first welcome to: ${userId}`);
         await this.client.sendMessage(
           userId,
-          `👋 👋 Welcome to the ${currentMonthName} Budget Challenge!\nFirst, tell me your preferred currency.\n👉 Example: AED, USD, INR`
+          `👋 👋 Welcome to the ${currentMonthName} Budget Challenge!\n # First, tell me your preferred currency.\n👉 Example: AED, USD, INR`
         );
         await this.mongoService.setUserState(userId, "awaiting_currency");
         return;
@@ -406,7 +406,7 @@ export class WhatsAppClient {
           console.log(`📤 Asking for budget after currency for: ${userId}`);
           await this.client.sendMessage(
             userId,
-            `Great! We’ll use ${detectedCurrency} for your budget.\nYour monthly budget (after fixed costs like rent, bills, loans)?\n👉 Example: If your budget is 2000 ${detectedCurrency}, type 2000`
+          `*Your monthly budget (after fixed costs like rent, bills, loans)?*\n👉 Example: If your budget is 2000 ${detectedCurrency}, type *2000*`
           );
           return;
         } else {

@@ -95,6 +95,9 @@ export class ExpenseService {
     );
 
     await this.client.sendMessage(userId, replyMessage);
+    if (created.number === 1) {
+      await this.client.sendMessage(userId, '💡 Tip: You can also scan expenses from images. Send a receipt photo. Optional: add a caption like Food.');
+    }
     await mongoService.clearPendingExpense(userId);
   }
 
@@ -229,6 +232,9 @@ Please send a clearer photo, add a caption like _Food_, or type manually like: C
 
         console.log(`📤 Sending expense reply to: ${originalMessage.from}`);
         await this.client.sendMessage(originalMessage.from, replyMessage);
+        if (created.number === 1) {
+          await this.client.sendMessage(originalMessage.from, '💡 Tip: You can also scan expenses from images. Send a receipt photo. Optional: add a caption like Food.');
+        }
       } else {
         await this.client.sendMessage(
           originalMessage.from,
@@ -308,7 +314,7 @@ Please send a clearer photo, add a caption like _Food_, or type manually like: C
       if (!finalExpense) {
         const ocrResult = await this.extractExpenseWithConfidence(imageDataUrl, caption);
 
-        if (ocrResult.confidence >= 0.85) {
+        if (ocrResult.confidence >= 0.60) {
           // Case B: High confidence - direct save
           finalExpense = ocrResult.expense;
           // If user caption looked like a name (no numbers), override item with it
@@ -397,6 +403,9 @@ Please send a clearer photo, add a caption like _Food_, or type manually like: C
 
         console.log(`📤 Sending image expense reply to: ${originalMessage.from}`);
         await this.client.sendMessage(originalMessage.from, replyMessage);
+        if (created.number === 1) {
+          await this.client.sendMessage(originalMessage.from, '💡 Tip: You can also scan expenses from images. Send a receipt photo. Optional: add a caption like Food.');
+        }
       }
     } catch (error) {
       console.error("❌ Error processing image message:", error);
@@ -511,6 +520,17 @@ Please send a clearer photo, add a caption like _Food_, or type manually like: C
     return String(num);
   }
 
+  private moneyCompact(amount: number): string {
+    const s = (Math.round(amount * 100) / 100).toFixed(2);
+    return s.replace(/\.00$/, '').replace(/(\.\d)0$/, '$1');
+  }
+
+  private abbrevMonth(month: string): string {
+    if (!month) return '';
+    const short = month.slice(0, 3);
+    return short.charAt(0).toUpperCase() + short.slice(1).toLowerCase();
+  }
+
   private money(amount: number): string {
     return (Math.round(amount * 100) / 100).toFixed(2);
   }
@@ -531,24 +551,17 @@ Please send a clearer photo, add a caption like _Food_, or type manually like: C
     dailyLimit: number | null,
     todaySpending: number | null
   ): string {
-    let reply = `*#${this.padNumber(number)}* • *${item}* — ${this.money(price)} ${currency} ✅\n`;
-    reply += `_${date}_\n`;
-    reply += `• Spent (${month} ${year}): *${this.money(totalAmount)}* / *${this.money(budget)}* ${currency}\n`;
-    reply += `• Remaining: *${this.money(remaining)}* ${currency}\n`;
+    let reply = `*#${this.padNumber(number)} ${item}: ${this.moneyCompact(price)} ${currency} ✅*\n`;
+    reply += `${this.abbrevMonth(month)} ${year} → Spent: ${this.moneyCompact(totalAmount)} / ${this.moneyCompact(budget)} ${currency}\n`;
+    reply += `Remaining: ${this.moneyCompact(remaining)} ${currency}\n`;
     if (budget > 0 && dailyLimit !== null && todaySpending !== null) {
-      reply += `🎯 *Daily limit*: ${this.money(dailyLimit)} ${currency}\n`;
+      reply += `*🎯 Daily limit: ${this.moneyCompact(dailyLimit)} ${currency}*\n`;
       if (todaySpending <= dailyLimit) {
-        reply += `✅ *You're on track*. Keep it up!`;
+        reply += `✅ You're on track. Keep it up!`;
       } else {
-        reply += `⚠️ *Above daily limit*. Try to save tomorrow.`;
+        reply += `⚠️ Above daily limit. Try to save tomorrow.`;
       }
     }
-
-    // Add tip for first expense
-    if (number === 1) {
-      reply += `\n\n💡 _Tip_: You can also scan expenses from images. Send a receipt photo. Optional: add a caption like _Food_.`;
-    }
-
     return reply;
   }
 
@@ -568,19 +581,7 @@ Please send a clearer photo, add a caption like _Food_, or type manually like: C
     dailyLimit: number | null,
     todaySpending: number | null
   ): string {
-    let reply = `*#${this.padNumber(number)}* • *${item}* — ${this.money(price)} ${currency} ✅ _(Updated)_\n`;
-    reply += `_${date}_\n`;
-    reply += `• Spent (${month} ${year}): *${this.money(totalAmount)}* / *${this.money(budget)}* ${currency}\n`;
-    reply += `• Remaining: *${this.money(remaining)}* ${currency}\n`;
-    if (budget > 0 && dailyLimit !== null && todaySpending !== null) {
-      reply += `🎯 *Daily limit*: ${this.money(dailyLimit)} ${currency}\n`;
-      if (todaySpending <= dailyLimit) {
-        reply += `✅ *You're on track*. Keep it up!`;
-      } else {
-        reply += `⚠️ *Above daily limit*. Try to save tomorrow.`;
-      }
-    }
-
+    let reply = `Updated. *#${this.padNumber(number)} ${item}: ${this.moneyCompact(price)} ${currency}*`;
     return reply;
   }
 
@@ -602,27 +603,20 @@ Please send a clearer photo, add a caption like _Food_, or type manually like: C
     isFromCaption: boolean,
     shortLink?: string
   ): string {
-    let reply = `*#${this.padNumber(number)}* • *${item}* — ${this.money(price)} ${currency} 📷 ✅\n`;
-    reply += `_${date}_\n`;
-    reply += `• Spent (${month} ${year}): *${this.money(totalAmount)}* / *${this.money(budget)}* ${currency}\n`;
-    reply += `• Remaining: *${this.money(remaining)}* ${currency}\n`;
+    let reply = `#${this.padNumber(number)} ${item}: ${this.moneyCompact(price)} ${currency} ✅\n`;
+    reply += `${this.abbrevMonth(month)} ${year} → Spent: ${this.moneyCompact(totalAmount)} / ${this.moneyCompact(budget)} ${currency}\n`;
+    reply += `Remaining: ${this.moneyCompact(remaining)} ${currency}\n`;
     if (shortLink) {
       reply += `🔗 View Image: ${shortLink}\n`;
     }
     if (budget > 0 && dailyLimit !== null && todaySpending !== null) {
-      reply += `🎯 *Daily limit*: ${this.money(dailyLimit)} ${currency}\n`;
+      reply += `🎯 Daily limit: ${this.moneyCompact(dailyLimit)} ${currency}\n`;
       if (todaySpending <= dailyLimit) {
-        reply += `✅ *You're on track*. Keep it up!`;
+        reply += `✅ You're on track. Keep it up!`;
       } else {
-        reply += `⚠️ *Above daily limit*. Try to save tomorrow.`;
+        reply += `⚠️ Above daily limit. Try to save tomorrow.`;
       }
     }
-
-    // Add tip for first expense
-    if (number === 1) {
-      reply += `\n\n💡 _Tip_: You can also scan expenses from images. Send a receipt photo. Optional: add a caption like _Food_.`;
-    }
-
     return reply;
   }
 
@@ -669,6 +663,9 @@ Please send a clearer photo, add a caption like _Food_, or type manually like: C
           );
 
           await this.client.sendMessage(originalMessage.from, replyMessage);
+          if (created.number === 1) {
+            await this.client.sendMessage(originalMessage.from, '💡 Tip: You can also scan expenses from images. Send a receipt photo. Optional: add a caption like Food.');
+          }
           await mongoService.clearPendingExpense(userId);
           return true;
         }

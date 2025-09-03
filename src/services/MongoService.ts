@@ -107,12 +107,12 @@ export class MongoService {
   }
 
   // User state management methods
-  public async getUserState(userId: string): Promise<'new' | 'awaiting_budget' | 'awaiting_currency' | 'active' | 'awaiting_ocr_confirmation' | 'awaiting_currency_change' | 'awaiting_image_expense'> {
+  public async getUserState(userId: string): Promise<'new' | 'awaiting_budget' | 'awaiting_currency' | 'active' | 'awaiting_ocr_confirmation' | 'awaiting_currency_change' | 'awaiting_image_expense' | 'awaiting_history_delete_confirm'> {
     const user = await User.findOne({ userId });
     return user?.state || 'new';
   }
 
-  public async setUserState(userId: string, state: 'new' | 'awaiting_budget' | 'awaiting_currency' | 'active' | 'awaiting_ocr_confirmation' | 'awaiting_currency_change' | 'awaiting_image_expense'): Promise<void> {
+  public async setUserState(userId: string, state: 'new' | 'awaiting_budget' | 'awaiting_currency' | 'active' | 'awaiting_ocr_confirmation' | 'awaiting_currency_change' | 'awaiting_image_expense' | 'awaiting_history_delete_confirm'): Promise<void> {
     await User.findOneAndUpdate(
       { userId },
       { state },
@@ -221,5 +221,26 @@ export class MongoService {
       { userId },
       { $unset: { pendingCurrency: 1 }, state: 'active' }
     );
+  }
+
+  // History delete confirmation flow
+  public async initiateHistoryDelete(userId: string): Promise<void> {
+    await User.findOneAndUpdate(
+      { userId },
+      { pendingDelete: true, state: 'awaiting_history_delete_confirm' },
+      { upsert: true, new: true }
+    );
+  }
+
+  public async clearHistoryDelete(userId: string): Promise<void> {
+    await User.findOneAndUpdate(
+      { userId },
+      { $unset: { pendingDelete: 1 }, state: 'active' }
+    );
+  }
+
+  public async isAwaitingHistoryDelete(userId: string): Promise<boolean> {
+    const user = await User.findOne({ userId });
+    return user?.state === 'awaiting_history_delete_confirm' && !!user?.pendingDelete;
   }
 }

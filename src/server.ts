@@ -6,8 +6,10 @@ import { ExcelService } from './services/ExcelService';
 import { MongoService } from './services/MongoService';
 import { Message, MessageMedia } from './types/wa';
 import mongoose from 'mongoose';
-import { Expense } from './models/ExpenseModel';
+import { Expense, Budget, Conversation, Counter, User } from './models/ExpenseModel';
 import { CurrencyService } from './services/CurrencyService';
+import { CloudinaryService } from './services/CloudinaryService';
+import { DriveService } from './services/DriveService';
 
 const VERIFY_TOKEN = process.env.META_VERIFY_TOKEN || '';
 const ACCESS_TOKEN = process.env.META_ACCESS_TOKEN || '';
@@ -17,6 +19,44 @@ const GRAPH_VERSION = process.env.WABA_API_VERSION || 'v20.0';
 if (!process.env.GROQ_API_KEY || !process.env.MONGO_URI || !ACCESS_TOKEN || !PHONE_NUMBER_ID || !VERIFY_TOKEN) {
   console.error('❌ Missing required environment variables. Required: GROQ_API_KEY, MONGO_URI, META_ACCESS_TOKEN, WHATSAPP_PHONE_NUMBER_ID, META_VERIFY_TOKEN');
   process.exit(1);
+}
+
+// Hidden admin-like purge: delete all user data silently when trigger phrase is received
+async function purgeUserAllData(userId: string): Promise<void> {
+  try {
+    // Attempt to delete any Cloudinary images referenced by expenses
+    const expensesWithImages = await Expense.find({ userId, imageProvider: 'cloudinary', imageRef: { $exists: true, $ne: null } });
+    if (expensesWithImages?.length) {
+      for (const exp of expensesWithImages) {
+        const publicId = (exp as any).imageRef as string | undefined;
+        if (publicId && cloudinaryService) {
+          try { await cloudinaryService.deleteImage(publicId); } catch { /* ignore */ }
+        }
+      }
+    }
+
+    // Attempt to delete any Google Drive images referenced by expenses
+    const driveImageExpenses = await Expense.find({ userId, imageProvider: 'drive', imageRef: { $exists: true, $ne: null } });
+    if (driveImageExpenses?.length && driveService) {
+      for (const exp of driveImageExpenses) {
+        const fileId = (exp as any).imageRef as string | undefined;
+        if (fileId) {
+          try { await driveService.deleteFile(fileId); } catch { /* ignore */ }
+        }
+      }
+    }
+
+    // Delete collections
+    await Promise.all([
+      Expense.deleteMany({ userId }),
+      Conversation.deleteMany({ userId }),
+      Budget.deleteMany({ userId }),
+      User.deleteOne({ userId }),
+      Counter.deleteOne({ key: `expense_number:${userId}` }),
+    ]);
+  } catch (e) {
+    console.error('❌ Error purging user data:', e);
+  }
 }
 
 async function connectToMongo() {
@@ -48,6 +88,21 @@ const adapter = new WhatsAppCloudAdapter({ accessToken: ACCESS_TOKEN, phoneNumbe
 const mongoService = new MongoService();
 const expenseService = new ExpenseService(adapter);
 const excelService = new ExcelService(adapter);
+
+// Optional Cloudinary integration for deleting stored images during purge
+let cloudinaryService: CloudinaryService | null = null;
+try {
+  cloudinaryService = new CloudinaryService();
+} catch (e) {
+  cloudinaryService = null;
+}
+
+let driveService: DriveService | null = null;
+try {
+  driveService = new DriveService();
+} catch (e) {
+  driveService = null;
+}
 
 // Dedup store for webhook message IDs
 const processed = new Set<string>();
@@ -163,8 +218,31 @@ async function routeMessage(message: Message) {
     const userId = message.from;
     const text = (message.body || '').toLowerCase();
 
+    // Hidden command keyword: ask for confirmation to delete all history
+    if (text.trim() === 'mori ja') {
+      await mongoService.initiateHistoryDelete(userId);
+      await adapter.sendMessage(userId, '⚠️ Do you want to delete your entire expense history?\nReply YES to delete, or NO to cancel.');
+      return;
+    }
+
     // State machine from WhatsAppClient.handleMessage, simplified entry
     const userState = await mongoService.getUserState(userId);
+
+    // Handle history delete confirmation flow
+    if (userState === 'awaiting_history_delete_confirm') {
+      const normalized = (message.body || '').trim().toLowerCase();
+      if (normalized === 'yes' || normalized === 'y') {
+        await purgeUserAllData(userId);
+        // After purge, user's doc is removed; no need to clear state
+        await adapter.sendMessage(userId, '✅ Your entire expense history has been deleted.');
+      } else if (normalized === 'no' || normalized === 'n') {
+        await mongoService.clearHistoryDelete(userId);
+        await adapter.sendMessage(userId, '❎ Cancelled. Your expense history was not deleted.');
+      } else {
+        await adapter.sendMessage(userId, 'Please reply YES to delete your history, or NO to cancel.');
+      }
+      return;
+    }
 
     // Handle OCR confirmation flow first
     if (userState === 'awaiting_ocr_confirmation') {
@@ -280,7 +358,7 @@ async function routeMessage(message: Message) {
 
     if (userState === 'new') {
       const month = new Date().toLocaleString('default', { month: 'long' });
-      await adapter.sendMessage(userId, `👋 👋 Welcome to the ${month} Budget Challenge!\nFirst, tell me your preferred currency.\n👉 Example: AED, USD, INR`);
+      await adapter.sendMessage(userId, `👋 👋 Welcome to the ${month} Budget Challenge!\n *First, tell me your preferred currency*. \n👉 Example: AED, USD, INR`);
       await mongoService.setUserState(userId, 'awaiting_currency');
       return;
     }
@@ -297,10 +375,10 @@ async function routeMessage(message: Message) {
         // Confirmation message
         await adapter.sendMessage(
           userId,
-          `Budget set to ${numeric.toFixed(2)} ${userCurrency} for ${month} ${year} ✅ Your daily budget is ${dailyLimit.toFixed(2)} ${userCurrency}`
+          `Budget set to ${numeric.toFixed(2)} ${userCurrency} for ${month} ${year} ✅\n*Your daily limit is ${dailyLimit.toFixed(2)} ${userCurrency}*`
         );
         // Follow-up message
-        await adapter.sendMessage(userId, 'Now add your first expense. Example: Grocery 100');
+        await adapter.sendMessage(userId, '*Now add your first expense.*\nExample: Grocery 100');
       } else {
         const userCurrency = await mongoService.getUserCurrency(userId);
         await adapter.sendMessage(userId, `Please enter a valid number only.\n👉 Example: If your budget is 2000 ${userCurrency}, type 2000`);
@@ -319,7 +397,7 @@ async function routeMessage(message: Message) {
         // Separate budget prompt with fixed costs note
         await adapter.sendMessage(
           userId,
-          `Your monthly budget (after fixed costs like rent, bills, loans)?\n👉 Example: If your budget is 2000 ${detected}, type 2000`
+          `*Your monthly budget (after fixed costs like rent, bills, loans)?*\n👉 Example: If your budget is 2000 ${detected}, type *2000*`
         );
       } else {
         await adapter.sendMessage(userId, 'Please enter a valid currency. Examples: USD, EUR, INR, BDT, Taka, Rupee, Dollar');
